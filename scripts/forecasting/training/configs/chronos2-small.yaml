@@ -1,0 +1,114 @@
+# Chronos-2 Small (28M) Training Config
+# Architecture: Encoder-only with Group Attention + Time Attention
+# Reference: arXiv:2510.15821
+#
+# Target: 8 nodes x 8 GPUs = 64x A100 80GB (mpirun)
+# Effective batch size: 16 * 64 * 1 = 1024
+
+# ===========================================================================
+# Model Architecture (matches autogluon/chronos-2-small config)
+# ===========================================================================
+d_model: 512
+d_kv: 64
+d_ff: 2048
+num_layers: 6
+num_heads: 8
+dropout_rate: 0.1
+layer_norm_epsilon: 1.0e-6
+initializer_factor: 0.05
+feed_forward_proj: "relu"
+dense_act_fn: "relu"
+rope_theta: 10000.0
+attn_implementation: "sdpa"
+
+# ===========================================================================
+# Forecasting Config
+# ===========================================================================
+context_length: 2048          # Stage 1: 2048, Stage 2: 8192
+input_patch_size: 16
+input_patch_stride: 16
+output_patch_size: 16
+prediction_length: 64
+max_output_patches: 64
+use_reg_token: true
+use_arcsinh: true
+time_encoding_scale: 8192
+
+quantiles:
+  - 0.01
+  - 0.05
+  - 0.1
+  - 0.2
+  - 0.3
+  - 0.4
+  - 0.5
+  - 0.6
+  - 0.7
+  - 0.8
+  - 0.9
+  - 0.95
+  - 0.99
+
+# ===========================================================================
+# Model Initialization
+# ===========================================================================
+random_init: true
+
+# ===========================================================================
+# Training Data
+# ===========================================================================
+training_data_paths:
+  - "/group-volume/ts-dataset/chronos_datasets/training_corpus_tsmixup_10m"
+  - "/group-volume/ts-dataset/chronos_datasets/training_corpus_kernel_synth_1m"
+probability:
+  - 0.9
+  - 0.1
+
+# ===========================================================================
+# Training Hyperparameters (64 GPU)
+# ===========================================================================
+# Effective batch = 16 * 64 * 1 = 1024
+max_steps: 200_000
+per_device_train_batch_size: 16
+gradient_accumulation_steps: 1
+learning_rate: 1.0e-4
+lr_scheduler_type: "cosine"
+warmup_ratio: 0.01
+weight_decay: 0.01
+max_grad_norm: 1.0
+optim: "adamw_torch_fused"
+seed: 42
+
+# ===========================================================================
+# Saving & Logging
+# ===========================================================================
+output_dir: "./output/chronos2-small-stage1"
+save_steps: 10_000
+log_steps: 100
+save_total_limit: 3
+report_to: "tensorboard"
+
+# ===========================================================================
+# Performance
+# ===========================================================================
+dataloader_num_workers: 4
+torch_compile: false
+
+# ===========================================================================
+# Distributed Training
+# ===========================================================================
+ddp_bucket_cap_mb: 25
+
+# FSDP (optional for 28M model, DDP is sufficient)
+# fsdp: "full_shard auto_wrap"
+# fsdp_config:
+#   fsdp_transformer_layer_cls_to_wrap: "Chronos2EncoderBlock"
+#   fsdp_backward_prefetch: "backward_pre"
+#   fsdp_forward_prefetch: false
+#   fsdp_use_orig_params: true
+#   fsdp_cpu_ram_efficient_loading: true
+#   fsdp_sync_module_states: true
+#   fsdp_state_dict_type: "FULL_STATE_DICT"
+#   fsdp_offload_params: false
+
+min_past: 60

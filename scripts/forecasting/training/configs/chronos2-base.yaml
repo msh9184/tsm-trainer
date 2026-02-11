@@ -1,0 +1,155 @@
+# Chronos-2 Base (120M) Training Config
+# Architecture: Encoder-only with Group Attention + Time Attention
+# Reference: arXiv:2510.15821
+#
+# Target: 8 nodes x 8 GPUs = 64x A100 80GB (mpirun)
+# Effective batch size: 12 * 64 * 1 = 768
+
+# ===========================================================================
+# Model Architecture (matches amazon/chronos-2 config)
+# ===========================================================================
+d_model: 768
+d_kv: 64
+d_ff: 3072
+num_layers: 12
+num_heads: 12
+dropout_rate: 0.1
+layer_norm_epsilon: 1.0e-6
+initializer_factor: 0.05
+feed_forward_proj: "relu"
+dense_act_fn: "relu"
+rope_theta: 10000.0
+attn_implementation: "sdpa"
+
+# ===========================================================================
+# Forecasting Config
+# ===========================================================================
+context_length: 2048          # Stage 1: 2048, Stage 2: 8192
+input_patch_size: 16
+input_patch_stride: 16
+output_patch_size: 16
+prediction_length: 64         # output_patch_size * max_output_patches_used
+max_output_patches: 64
+use_reg_token: true
+use_arcsinh: true
+time_encoding_scale: 8192    # Keep at max context_length
+
+quantiles:
+  - 0.01
+  - 0.05
+  - 0.1
+  - 0.15
+  - 0.2
+  - 0.25
+  - 0.3
+  - 0.35
+  - 0.4
+  - 0.45
+  - 0.5
+  - 0.55
+  - 0.6
+  - 0.65
+  - 0.7
+  - 0.75
+  - 0.8
+  - 0.85
+  - 0.9
+  - 0.95
+  - 0.99
+
+# ===========================================================================
+# Model Initialization
+# ===========================================================================
+random_init: true
+# model_id: "amazon/chronos-2"  # Uncomment for fine-tuning
+
+# ===========================================================================
+# Training Data
+# ===========================================================================
+training_data_paths:
+  - "/group-volume/ts-dataset/chronos_datasets/training_corpus_tsmixup_10m"
+  - "/group-volume/ts-dataset/chronos_datasets/training_corpus_kernel_synth_1m"
+probability:
+  - 0.9
+  - 0.1
+
+# Validation (optional)
+# validation_data_paths:
+#   - "/group-volume/ts-dataset/chronos_datasets/australian_electricity_demand"
+# max_val_series: 10000
+
+# Limit training series loaded into memory at once.
+# Full 11M series requires ~50GB+ RAM per rank.
+# When set, a RANDOM subset of this size is selected from the full dataset
+# (not just the first N entries), preserving data distribution.
+# The random selection uses a deterministic seed for reproducibility.
+# Recommendation: Start with 1M for testing, increase for full training.
+max_train_series: 1_000_000
+
+# ===========================================================================
+# Training Hyperparameters (64 GPU)
+# ===========================================================================
+# Effective batch = per_device_train_batch_size * world_size * gradient_accumulation_steps
+#                 = 12 * 64 * 1 = 768
+max_steps: 200_000
+per_device_train_batch_size: 12
+gradient_accumulation_steps: 1
+learning_rate: 1.0e-4
+lr_scheduler_type: "cosine"
+warmup_ratio: 0.01
+weight_decay: 0.01
+max_grad_norm: 1.0
+optim: "adamw_torch_fused"
+seed: 42
+
+# ===========================================================================
+# Saving & Logging
+# ===========================================================================
+output_dir: "./output/chronos2-base-stage1"
+save_steps: 10_000
+log_steps: 100
+save_total_limit: 3
+report_to: "tensorboard"
+health_report_interval: 1000
+
+# ===========================================================================
+# Lite Benchmark (periodic forecast quality evaluation)
+# ===========================================================================
+# Runs WQL/MASE evaluation on a small set of benchmark datasets during training.
+# Requires pre-downloaded datasets (see scripts/evaluation/download_eval_datasets.py).
+benchmark_config: "configs/lite-benchmark.yaml"
+benchmark_eval_steps: 10_000
+benchmark_top_k_checkpoints: 3
+benchmark_batch_size: 32
+
+# ===========================================================================
+# Performance
+# ===========================================================================
+dataloader_num_workers: 4
+torch_compile: false
+gradient_checkpointing: true
+
+# ===========================================================================
+# Distributed Training
+# ===========================================================================
+# DDP settings (used when fsdp is empty/disabled)
+ddp_bucket_cap_mb: 25
+
+# FSDP settings (recommended for multi-node 64 GPU)
+fsdp: "full_shard auto_wrap"
+fsdp_config:
+  fsdp_transformer_layer_cls_to_wrap: "Chronos2EncoderBlock"
+  fsdp_backward_prefetch: "backward_pre"
+  fsdp_forward_prefetch: false
+  fsdp_use_orig_params: true
+  fsdp_cpu_ram_efficient_loading: true
+  fsdp_sync_module_states: true
+  fsdp_state_dict_type: "FULL_STATE_DICT"
+  fsdp_offload_params: false
+
+# ===========================================================================
+# Resume
+# ===========================================================================
+# resume_from_checkpoint: "./output/chronos2-base-stage1/checkpoint-50000"
+
+min_past: 60
