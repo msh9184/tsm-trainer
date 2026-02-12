@@ -1,0 +1,6 @@
+{
+    "editor.fontSize": 14,
+    "editor.mouseWheelZoom": true,
+    "terminal.integrated.mouseWheelZoom": true,
+    "editor.smoothScrolling": false
+}
