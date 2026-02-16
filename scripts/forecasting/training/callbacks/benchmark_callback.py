@@ -258,6 +258,7 @@ class EnhancedBenchmarkCallback:
         """Legacy evaluation (same as original _run_lite_benchmark).
 
         Kept for backward compatibility when engine module is not in path.
+        Supports both local dataset loading and HuggingFace download.
         """
         import datasets as hf_datasets
         import pandas as pd
@@ -290,24 +291,53 @@ class EnhancedBenchmarkCallback:
             hf_repo = bm_config["hf_repo"]
             offset = bm_config["offset"]
             num_rolls = bm_config.get("num_rolls", 1)
-            split = bm_config.get("split", "train")
+            split_name = bm_config.get("split", "train")
 
             try:
-                trust_remote_code = hf_repo == "autogluon/chronos_datasets_extra"
-                ds = hf_datasets.load_dataset(
-                    hf_repo, ds_name, split=split,
-                    trust_remote_code=trust_remote_code,
-                )
-                ds.set_format("numpy")
+                entries = None
+                series_fields = None
 
-                series_fields = [
-                    col for col in ds.features
-                    if isinstance(ds.features[col], hf_datasets.Sequence)
-                    and col != "timestamp"
-                ]
+                # Try local dataset loading first
+                if self._datasets_root:
+                    local_path = Path(self._datasets_root) / ds_name
+                    if local_path.exists():
+                        logger.info(f"  Loading {ds_name} from local: {local_path}")
+                        try:
+                            ds = hf_datasets.load_from_disk(str(local_path))
+                            if isinstance(ds, hf_datasets.DatasetDict):
+                                ds = ds[split_name]
+                            ds.set_format("numpy")
+                            series_fields = [
+                                col for col in ds.features
+                                if isinstance(ds.features[col], hf_datasets.Sequence)
+                                and col != "timestamp"
+                            ]
+                            entries = ds
+                        except Exception:
+                            # Fallback to Arrow IPC
+                            entries, series_fields = self._load_arrow_fallback(local_path)
+
+                # Fallback to HuggingFace download
+                if entries is None:
+                    trust_remote_code = hf_repo == "autogluon/chronos_datasets_extra"
+                    ds = hf_datasets.load_dataset(
+                        hf_repo, ds_name, split=split_name,
+                        trust_remote_code=trust_remote_code,
+                    )
+                    ds.set_format("numpy")
+                    series_fields = [
+                        col for col in ds.features
+                        if isinstance(ds.features[col], hf_datasets.Sequence)
+                        and col != "timestamp"
+                    ]
+                    entries = ds
+
+                # Convert to GluonTS format
+                first_entry = entries[0]
+                dataset_freq = pd.DatetimeIndex(first_entry["timestamp"]).to_period()[0].freqstr
+
                 gts_dataset = []
-                dataset_freq = pd.DatetimeIndex(ds[0]["timestamp"]).to_period()[0].freqstr
-                for entry in ds:
+                for entry in entries:
                     for field in series_fields:
                         gts_dataset.append({
                             "start": pd.Period(entry["timestamp"][0], freq=dataset_freq),
@@ -317,6 +347,7 @@ class EnhancedBenchmarkCallback:
                 _, test_template = gluonts_split(gts_dataset, offset=offset)
                 test_data = test_template.generate_instances(pred_len, windows=num_rolls)
 
+                # Generate forecasts — pipeline returns (N, H, Q), swap to (N, Q, H)
                 forecast_outputs = []
                 for batch in batcher(test_data.input, batch_size=self._eval_batch_size):
                     context = [torch.tensor(e["target"]) for e in batch]
@@ -327,10 +358,15 @@ class EnhancedBenchmarkCallback:
                         )
                     if isinstance(quantiles, list):
                         quantiles = np.stack(quantiles).squeeze(axis=1)
-                    quantiles = quantiles.swapaxes(-1, -2)
+                    elif isinstance(quantiles, torch.Tensor):
+                        quantiles = quantiles.cpu().numpy()
+                    # Pipeline raw output is (N, H, Q) → swap to (N, Q, H)
+                    if quantiles.ndim == 3 and quantiles.shape[-1] == len(eval_quantiles):
+                        quantiles = quantiles.swapaxes(-1, -2)
                     forecast_outputs.append(quantiles)
                 forecast_outputs = np.concatenate(forecast_outputs)
 
+                # Convert to QuantileForecast — each item is (Q, H)
                 forecasts = []
                 for item, ts in zip(forecast_outputs, test_data.input):
                     start = ts["start"] + len(ts["target"])
@@ -367,6 +403,49 @@ class EnhancedBenchmarkCallback:
             "avg_mase": float(np.mean(all_mase)) if all_mase else None,
             "per_dataset": results_per_dataset,
         }
+
+    @staticmethod
+    def _load_arrow_fallback(data_path: Path) -> tuple[list[dict], list[str]]:
+        """Load dataset directly from Arrow/Parquet files (version-mismatch fallback)."""
+        import pyarrow as pa
+        from pyarrow import ipc
+
+        arrow_files = sorted(data_path.glob("*.arrow"))
+        parquet_files = sorted(data_path.glob("*.parquet"))
+
+        if not arrow_files and not parquet_files:
+            raise FileNotFoundError(f"No .arrow or .parquet files in {data_path}")
+
+        tables = []
+        if arrow_files:
+            for f in arrow_files:
+                try:
+                    reader = ipc.open_stream(str(f))
+                    tables.append(reader.read_all())
+                except Exception:
+                    tables.append(ipc.open_file(str(f)).read_all())
+        elif parquet_files:
+            import pyarrow.parquet as pq
+            for f in parquet_files:
+                tables.append(pq.read_table(str(f)))
+
+        table = pa.concat_tables(tables) if len(tables) > 1 else tables[0]
+
+        series_fields = [
+            field.name for field in table.schema
+            if field.name != "timestamp"
+            and isinstance(field.type, (pa.ListType, pa.LargeListType))
+        ]
+
+        data = table.to_pydict()
+        rows = []
+        for i in range(len(table)):
+            row = {"timestamp": np.array(data["timestamp"][i])}
+            for field in series_fields:
+                row[field] = np.asarray(data[field][i], dtype=np.float32)
+            rows.append(row)
+
+        return rows, series_fields
 
     def _compute_checkpoint_score(self, results: dict) -> float | None:
         """Compute the score used for checkpoint ranking.

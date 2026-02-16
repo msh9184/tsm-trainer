@@ -287,6 +287,8 @@ def generate_quantile_forecasts(
     from gluonts.model.forecast import QuantileForecast
 
     forecast_outputs = []
+    n_batches = 0
+    n_series_processed = 0
     for batch in batcher(test_data_input, batch_size=batch_size):
         context = [torch.tensor(entry["target"]) for entry in batch]
         quantiles = forecaster.predict_quantiles(
@@ -295,12 +297,30 @@ def generate_quantile_forecasts(
             quantile_levels=quantile_levels,
             **predict_kwargs,
         )
-        # Ensure shape is (N, Q, H) then swap to (N, H, Q) for GluonTS
-        forecast_outputs.append(quantiles.swapaxes(-1, -2))
+        # predict_quantiles() returns (N, Q, H) per BaseForecaster contract.
+        # QuantileForecast expects per-item (Q, H), so keep as-is.
+        assert quantiles.ndim == 3, (
+            f"Expected 3D output (N, Q, H), got shape {quantiles.shape}"
+        )
+        forecast_outputs.append(quantiles)
+        n_batches += 1
+        n_series_processed += len(batch)
+        if n_batches % 10 == 0:
+            logger.info(f"  Forecasting progress: {n_series_processed} series done")
 
     forecast_outputs = np.concatenate(forecast_outputs)
 
+    # Validate: forecast_outputs shape should be (total_N, Q, H)
+    n_quantiles = len(quantile_levels)
+    if forecast_outputs.shape[1] != n_quantiles:
+        raise ValueError(
+            f"Shape mismatch: forecast_outputs has shape {forecast_outputs.shape} "
+            f"but expected axis 1 = {n_quantiles} (number of quantile levels). "
+            f"Check that predict_quantiles() returns (N, Q, H)."
+        )
+
     # Convert to GluonTS QuantileForecast objects
+    # Each item has shape (Q, H) matching QuantileForecast expectation
     forecasts = []
     for item, ts in zip(forecast_outputs, test_data_input):
         forecast_start = ts["start"] + len(ts["target"])
@@ -443,16 +463,27 @@ class Evaluator:
             f"({len(configs)} datasets, model={self.forecaster.name})"
         )
 
+        import time
+
         result_rows = []
-        for config in configs:
+        for idx, config in enumerate(configs, 1):
+            ds_start = time.time()
             try:
                 result = self.evaluate_dataset(config, **predict_kwargs)
                 result_rows.append(result)
                 wql = result.get("WQL", float("nan"))
                 mase = result.get("MASE", float("nan"))
-                logger.info(f"  {config['name']}: WQL={wql:.4f}, MASE={mase:.4f}")
+                elapsed = time.time() - ds_start
+                logger.info(
+                    f"  [{idx}/{len(configs)}] {config['name']}: "
+                    f"WQL={wql:.4f}, MASE={mase:.4f} ({elapsed:.1f}s)"
+                )
             except Exception as e:
-                logger.warning(f"  {config['name']}: FAILED — {e}")
+                elapsed = time.time() - ds_start
+                logger.warning(
+                    f"  [{idx}/{len(configs)}] {config['name']}: "
+                    f"FAILED ({elapsed:.1f}s) — {e}"
+                )
                 result_rows.append({
                     "dataset": config["name"],
                     "model": self.forecaster.name,

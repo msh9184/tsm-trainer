@@ -10,9 +10,10 @@
 #   ltsf.py          — LTSF-Benchmark (ETT, Weather, Traffic, Electricity)
 
 from .base import BenchmarkAdapter
-from .chronos_bench import ChronosBenchmarkAdapter
+from .chronos_bench import ChronosBenchmarkAdapter, ChronosLiteBenchmarkAdapter
 
 __all__ = [
     "BenchmarkAdapter",
     "ChronosBenchmarkAdapter",
+    "ChronosLiteBenchmarkAdapter",
 ]

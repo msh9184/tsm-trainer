@@ -9,7 +9,12 @@
 #   aggregator.py  — Result aggregation (gmean, bootstrap CI, win rate, skill score)
 
 from .metrics import MetricRegistry
-from .forecaster import BaseForecaster, Chronos2Forecaster
+from .forecaster import (
+    BaseForecaster,
+    Chronos2Forecaster,
+    ChronosBoltForecaster,
+    TrainingModelForecaster,
+)
 from .evaluator import Evaluator
 from .aggregator import Aggregator
 
@@ -17,6 +22,8 @@ __all__ = [
     "MetricRegistry",
     "BaseForecaster",
     "Chronos2Forecaster",
+    "ChronosBoltForecaster",
+    "TrainingModelForecaster",
     "Evaluator",
     "Aggregator",
 ]

@@ -133,6 +133,62 @@ class BaseForecaster(ABC):
         return np.concatenate(all_outputs, axis=0)
 
 
+def _normalize_pipeline_output(
+    quantiles,
+    n_quantiles: int,
+    prediction_length: int,
+) -> np.ndarray:
+    """Convert raw pipeline output to standardized (N, Q, H) numpy array.
+
+    Chronos pipelines return quantile predictions in (N, H, Q) format.
+    This function handles type conversion and axis reordering to produce
+    the (N, Q, H) format expected by BaseForecaster callers.
+
+    Parameters
+    ----------
+    quantiles : list, torch.Tensor, or np.ndarray
+        Raw pipeline output.
+    n_quantiles : int
+        Number of quantile levels requested.
+    prediction_length : int
+        Expected forecast horizon length.
+
+    Returns
+    -------
+    np.ndarray, shape (N, Q, H)
+    """
+    # Convert to numpy
+    if isinstance(quantiles, list):
+        # Chronos-2 returns list of tensors for multivariate
+        quantiles = np.stack(quantiles).squeeze(axis=1)
+    elif isinstance(quantiles, torch.Tensor):
+        quantiles = quantiles.cpu().numpy()
+
+    if quantiles.ndim != 3:
+        raise ValueError(
+            f"Pipeline returned {quantiles.ndim}D array (shape={quantiles.shape}), "
+            f"expected 3D (N, H, Q) or (N, Q, H)."
+        )
+
+    # Detect and swap: pipeline returns (N, H, Q), we need (N, Q, H).
+    # If last dim == n_quantiles and second dim != n_quantiles, swap.
+    # If H == Q (ambiguous), pipeline convention is (N, H, Q) so still swap.
+    if quantiles.shape[-1] == n_quantiles:
+        quantiles = quantiles.swapaxes(-1, -2)
+    elif quantiles.shape[1] == n_quantiles:
+        # Already in (N, Q, H) format
+        pass
+    else:
+        logger.warning(
+            f"Ambiguous pipeline output shape {quantiles.shape}: "
+            f"expected Q={n_quantiles}, H={prediction_length}. "
+            f"Assuming (N, H, Q) convention and swapping."
+        )
+        quantiles = quantiles.swapaxes(-1, -2)
+
+    return quantiles
+
+
 class Chronos2Forecaster(BaseForecaster):
     """Forecaster wrapper for Chronos-2 models.
 
@@ -190,17 +246,9 @@ class Chronos2Forecaster(BaseForecaster):
                 **kwargs,
             )
 
-        if isinstance(quantiles, list):
-            # Chronos-2 returns list of tensors for multivariate
-            quantiles = np.stack(quantiles).squeeze(axis=1)
-        elif isinstance(quantiles, torch.Tensor):
-            quantiles = quantiles.cpu().numpy()
-
-        # Shape: (N, Q, H) — swap if needed
-        # Chronos pipeline returns (N, H, Q), need (N, Q, H)
-        if quantiles.ndim == 3 and quantiles.shape[-1] == len(quantile_levels):
-            quantiles = quantiles.swapaxes(-1, -2)
-
+        quantiles = _normalize_pipeline_output(
+            quantiles, len(quantile_levels), prediction_length
+        )
         return quantiles
 
 
@@ -244,12 +292,9 @@ class ChronosBoltForecaster(BaseForecaster):
                 **kwargs,
             )
 
-        if isinstance(quantiles, torch.Tensor):
-            quantiles = quantiles.cpu().numpy()
-
-        if quantiles.ndim == 3 and quantiles.shape[-1] == len(quantile_levels):
-            quantiles = quantiles.swapaxes(-1, -2)
-
+        quantiles = _normalize_pipeline_output(
+            quantiles, len(quantile_levels), prediction_length
+        )
         return quantiles
 
 
@@ -299,12 +344,7 @@ class TrainingModelForecaster(BaseForecaster):
                 **kwargs,
             )
 
-        if isinstance(quantiles, list):
-            quantiles = np.stack(quantiles).squeeze(axis=1)
-        elif isinstance(quantiles, torch.Tensor):
-            quantiles = quantiles.cpu().numpy()
-
-        if quantiles.ndim == 3 and quantiles.shape[-1] == len(quantile_levels):
-            quantiles = quantiles.swapaxes(-1, -2)
-
+        quantiles = _normalize_pipeline_output(
+            quantiles, len(quantile_levels), prediction_length
+        )
         return quantiles

@@ -701,9 +701,103 @@ def parse_args():
         help="Result directories to compare against",
     )
 
+    # Diagnostics
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Check data availability and model loading without running evaluation",
+    )
+
     return parser.parse_args()
+
+
+def run_dry_run(args):
+    """Check data availability and model loading without running evaluation."""
+    import yaml
+
+    logger.info("")
+    logger.info("=" * 72)
+    logger.info("  DRY RUN — Checking data and model availability")
+    logger.info("=" * 72)
+    logger.info("")
+
+    # Check model
+    model_path = Path(args.model_path)
+    if model_path.exists():
+        logger.info(f"  Model path: {model_path} [EXISTS]")
+        config_files = list(model_path.glob("config*.json"))
+        logger.info(f"    Config files: {[f.name for f in config_files]}")
+    else:
+        logger.warning(f"  Model path: {model_path} [NOT FOUND]")
+
+    # Check each benchmark's datasets
+    configs_dir = SCRIPT_DIR / "configs"
+    for benchmark_name in args.benchmarks:
+        logger.info("")
+        logger.info(f"  --- Benchmark: {benchmark_name} ---")
+
+        config_map = {
+            "chronos_ii": "zero-shot.yaml",
+            "chronos_i": "in-domain.yaml",
+            "lite": "lite-benchmark.yaml",
+            "extended": "extended-benchmark.yaml",
+        }
+        config_file = config_map.get(benchmark_name)
+        if not config_file:
+            logger.info(f"    (external benchmark, skipping dataset check)")
+            continue
+
+        config_path = configs_dir / config_file
+        if not config_path.exists():
+            logger.warning(f"    Config file NOT FOUND: {config_path}")
+            continue
+
+        with open(config_path) as f:
+            configs = yaml.safe_load(f)
+
+        for ds_config in configs:
+            ds_name = ds_config["name"]
+            found = False
+            checked_paths = []
+
+            if args.datasets_root:
+                local_path = Path(args.datasets_root) / ds_name
+                checked_paths.append(str(local_path))
+                if local_path.exists():
+                    arrow_files = list(local_path.glob("*.arrow"))
+                    parquet_files = list(local_path.glob("*.parquet"))
+                    data_files = arrow_files + parquet_files
+                    total_size = sum(f.stat().st_size for f in data_files)
+                    logger.info(
+                        f"    {ds_name}: [FOUND] "
+                        f"{len(data_files)} data file(s), "
+                        f"{total_size / (1024*1024):.1f} MB"
+                    )
+                    found = True
+
+            if not found:
+                logger.warning(
+                    f"    {ds_name}: [NOT FOUND] "
+                    f"Checked: {checked_paths or ['(no datasets_root set)']}"
+                )
+
+    # Environment info
+    env_info = collect_environment_info()
+    logger.info("")
+    logger.info("  --- Environment ---")
+    logger.info(f"    Python: {env_info.get('python_version', 'N/A')}")
+    logger.info(f"    PyTorch: {env_info.get('torch_version', 'N/A')}")
+    logger.info(f"    CUDA: {env_info.get('cuda_available', False)}")
+    logger.info(f"    PyArrow: {env_info.get('pyarrow_version', 'N/A')}")
+    logger.info(f"    Datasets: {env_info.get('datasets_version', 'N/A')}")
+    logger.info(f"    GluonTS: {env_info.get('gluonts_version', 'N/A')}")
+    logger.info("")
+    logger.info("  Dry run complete. No evaluation was performed.")
+    logger.info("=" * 72)
 
 
 if __name__ == "__main__":
     args = parse_args()
-    run_benchmarks(args)
+    if args.dry_run:
+        run_dry_run(args)
+    else:
+        run_benchmarks(args)
