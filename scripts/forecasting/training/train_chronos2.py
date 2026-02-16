@@ -1712,6 +1712,7 @@ def run_training(config: dict):
     benchmark_checkpoint_metric = config.get("benchmark_checkpoint_metric", "wql")
     benchmark_composite_weights = config.get("benchmark_composite_weights", {"wql": 0.7, "mase": 0.3})
     benchmark_datasets_root = config.get("benchmark_datasets_root", None)
+    benchmark_eval_timeout = config.get("benchmark_eval_timeout", 0)
     benchmark_cb = None
 
     if benchmark_config_path:
@@ -1757,6 +1758,7 @@ def run_training(config: dict):
                     composite_weights=benchmark_composite_weights,
                     eval_batch_size=benchmark_batch_size,
                     datasets_root=benchmark_datasets_root,
+                    eval_timeout=benchmark_eval_timeout,
                 )
                 if is_main_process():
                     logger.info(f"Enhanced benchmark enabled:")
@@ -1874,8 +1876,16 @@ def run_training(config: dict):
         if benchmark_cb:
             logger.info("║" + f"  │  Benchmark T1:  every {benchmark_eval_steps} steps ({Path(benchmark_config_path).name})".ljust(72) + "║")
             if benchmark_tier2_config:
-                logger.info("║" + f"  │  Benchmark T2:  every {benchmark_tier2_eval_steps} steps".ljust(72) + "║")
+                t2_name = Path(benchmark_tier2_config).name if benchmark_tier2_config else "N/A"
+                logger.info("║" + f"  │  Benchmark T2:  every {benchmark_tier2_eval_steps} steps ({t2_name})".ljust(72) + "║")
             logger.info("║" + f"  │  Top-K ckpts:   {benchmark_top_k} (by {benchmark_checkpoint_metric})".ljust(72) + "║")
+            if benchmark_checkpoint_metric == "composite":
+                w = benchmark_composite_weights
+                logger.info("║" + f"  │  Composite wt:  WQL={w.get('wql', 0.7)}, MASE={w.get('mase', 0.3)}".ljust(72) + "║")
+            if benchmark_datasets_root:
+                logger.info("║" + f"  │  Datasets root: {benchmark_datasets_root}".ljust(72) + "║")
+            if benchmark_eval_timeout > 0:
+                logger.info("║" + f"  │  Eval timeout:  {benchmark_eval_timeout}s per tier".ljust(72) + "║")
         else:
             logger.info("║" + f"  │  Benchmark:     disabled (set benchmark_config in yaml)".ljust(72) + "║")
         logger.info("║" + f"  │  Output dir:    {output_dir}".ljust(72) + "║")

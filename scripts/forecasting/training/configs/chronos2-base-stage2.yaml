@@ -100,12 +100,24 @@ report_to: "tensorboard"
 health_report_interval: 1000
 
 # ===========================================================================
-# Lite Benchmark
+# Benchmark Evaluation (Training-Time Validation)
 # ===========================================================================
+# Stage 2 uses the same tiered benchmark system as Stage 1.
 benchmark_config: "configs/lite-benchmark.yaml"
+benchmark_tier2_config: "configs/extended-benchmark.yaml"
+
 benchmark_eval_steps: 5_000
-benchmark_top_k_checkpoints: 3
-benchmark_batch_size: 32
+benchmark_tier2_eval_steps: 25_000
+
+benchmark_checkpoint_metric: "composite"
+benchmark_composite_weights:
+  wql: 0.6
+  mase: 0.4
+
+benchmark_top_k_checkpoints: 5
+benchmark_batch_size: 64
+benchmark_datasets_root: "/group-volume/ts-dataset/chronos_datasets"
+benchmark_eval_timeout: 600
 
 # ===========================================================================
 # Performance
