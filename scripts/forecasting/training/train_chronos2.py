@@ -1701,11 +1701,17 @@ def run_training(config: dict):
     health_report_interval = config.get("health_report_interval", 1000)
     max_grad_norm = config.get("max_grad_norm", 1.0)
 
-    # Lite Benchmark Callback (optional — requires config path)
+    # Benchmark Callback (optional — requires config path)
+    # Supports both legacy LiteBenchmarkCallback and new EnhancedBenchmarkCallback
     benchmark_config_path = config.get("benchmark_config", None)
     benchmark_eval_steps = config.get("benchmark_eval_steps", 10000)
     benchmark_top_k = config.get("benchmark_top_k_checkpoints", 3)
     benchmark_batch_size = config.get("benchmark_batch_size", 32)
+    benchmark_tier2_config = config.get("benchmark_tier2_config", None)
+    benchmark_tier2_eval_steps = config.get("benchmark_tier2_eval_steps", 20000)
+    benchmark_checkpoint_metric = config.get("benchmark_checkpoint_metric", "wql")
+    benchmark_composite_weights = config.get("benchmark_composite_weights", {"wql": 0.7, "mase": 0.3})
+    benchmark_datasets_root = config.get("benchmark_datasets_root", None)
     benchmark_cb = None
 
     if benchmark_config_path:
@@ -1719,15 +1725,55 @@ def run_training(config: dict):
                 script_dir.parent.parent / benchmark_config_path,            # project root/configs/...
             ]
             bm_path = next((c for c in candidates if c.exists()), candidates[0])
+
+        # Resolve Tier 2 path (if configured)
+        bm_tier2_path = None
+        if benchmark_tier2_config:
+            bm_tier2_path = Path(benchmark_tier2_config)
+            if not bm_tier2_path.is_absolute():
+                script_dir = Path(__file__).parent
+                candidates_t2 = [
+                    script_dir / benchmark_tier2_config,
+                    script_dir.parent / "evaluation" / benchmark_tier2_config,
+                    script_dir.parent.parent / benchmark_tier2_config,
+                ]
+                bm_tier2_path = next((c for c in candidates_t2 if c.exists()), candidates_t2[0])
+            if not bm_tier2_path.exists():
+                if is_main_process():
+                    logger.warning(f"Tier 2 benchmark config not found: {bm_tier2_path}. Tier 2 disabled.")
+                bm_tier2_path = None
+
         if bm_path.exists():
-            benchmark_cb = LiteBenchmarkCallback(
-                benchmark_config_path=str(bm_path),
-                eval_steps=benchmark_eval_steps,
-                top_k_checkpoints=benchmark_top_k,
-                eval_batch_size=benchmark_batch_size,
-            )
-            if is_main_process():
-                logger.info(f"Lite benchmark enabled: {bm_path.name} every {benchmark_eval_steps} steps")
+            # Use EnhancedBenchmarkCallback (new multi-tier system)
+            try:
+                from callbacks.benchmark_callback import EnhancedBenchmarkCallback
+                benchmark_cb = EnhancedBenchmarkCallback(
+                    tier1_config=str(bm_path),
+                    tier2_config=str(bm_tier2_path) if bm_tier2_path else None,
+                    tier1_eval_steps=benchmark_eval_steps,
+                    tier2_eval_steps=benchmark_tier2_eval_steps,
+                    top_k_checkpoints=benchmark_top_k,
+                    checkpoint_metric=benchmark_checkpoint_metric,
+                    composite_weights=benchmark_composite_weights,
+                    eval_batch_size=benchmark_batch_size,
+                    datasets_root=benchmark_datasets_root,
+                )
+                if is_main_process():
+                    logger.info(f"Enhanced benchmark enabled:")
+                    logger.info(f"  Tier 1: {bm_path.name} every {benchmark_eval_steps} steps")
+                    if bm_tier2_path:
+                        logger.info(f"  Tier 2: {bm_tier2_path.name} every {benchmark_tier2_eval_steps} steps")
+                    logger.info(f"  Checkpoint metric: {benchmark_checkpoint_metric}")
+            except ImportError:
+                # Fallback to legacy LiteBenchmarkCallback
+                benchmark_cb = LiteBenchmarkCallback(
+                    benchmark_config_path=str(bm_path),
+                    eval_steps=benchmark_eval_steps,
+                    top_k_checkpoints=benchmark_top_k,
+                    eval_batch_size=benchmark_batch_size,
+                )
+                if is_main_process():
+                    logger.info(f"Lite benchmark enabled (legacy): {bm_path.name} every {benchmark_eval_steps} steps")
         elif is_main_process():
             logger.warning(f"Benchmark config not found at any of: {[str(c) for c in candidates]}. Benchmark evaluation disabled.")
 
@@ -1826,8 +1872,10 @@ def run_training(config: dict):
         logger.info("║" + f"  │  Log steps:      every {config.get('log_steps', 100)} steps".ljust(72) + "║")
         logger.info("║" + f"  │  Save steps:     every {config.get('save_steps', 5000)} steps".ljust(72) + "║")
         if benchmark_cb:
-            logger.info("║" + f"  │  Benchmark:     every {benchmark_eval_steps} steps ({Path(benchmark_config_path).name})".ljust(72) + "║")
-            logger.info("║" + f"  │  Top-K ckpts:   {benchmark_top_k} (by WQL)".ljust(72) + "║")
+            logger.info("║" + f"  │  Benchmark T1:  every {benchmark_eval_steps} steps ({Path(benchmark_config_path).name})".ljust(72) + "║")
+            if benchmark_tier2_config:
+                logger.info("║" + f"  │  Benchmark T2:  every {benchmark_tier2_eval_steps} steps".ljust(72) + "║")
+            logger.info("║" + f"  │  Top-K ckpts:   {benchmark_top_k} (by {benchmark_checkpoint_metric})".ljust(72) + "║")
         else:
             logger.info("║" + f"  │  Benchmark:     disabled (set benchmark_config in yaml)".ljust(72) + "║")
         logger.info("║" + f"  │  Output dir:    {output_dir}".ljust(72) + "║")
