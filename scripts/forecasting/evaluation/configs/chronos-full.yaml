@@ -1,47 +1,44 @@
 # ===========================================================================
-# Full Benchmark Configuration (All Datasets)
+# Chronos Full Benchmark (42 datasets)
 # ===========================================================================
-# Comprehensive evaluation covering ALL available benchmark datasets.
-# Combines: zero-shot (27) + in-domain (15) with duplicates removed.
+# Comprehensive evaluation covering ALL available Chronos benchmark datasets.
+# Combines: Chronos I (in-domain, 15) + Chronos II (zero-shot, 27)
+# with duplicates removed.
 #
-# Total: 36 unique datasets across all frequency ranges and domains.
-# Expected time: ~45-90 minutes on single A100 GPU.
+# Total: 42 unique datasets across all frequency ranges and domains.
+# Expected time: ~90 min (A100 GPU)
 #
 # Use cases:
 #   - Final model evaluation before release
-#   - Training-time Tier 3 evaluation (infrequent, e.g., every 50K steps)
-#   - Comparing models across the full evaluation spectrum
+#   - Comprehensive comparison across all Chronos datasets
 #
-# All datasets from autogluon/chronos_datasets (and chronos_datasets_extra).
-# Pre-download to datasets_root for offline evaluation.
+# Metrics: WQL, MASE
+# Aggregation: Geometric mean of relative scores vs. Seasonal Naive
+#
+# Local data: datasets_root / {name}/
+#   Default: /group-volume/ts-dataset/benchmarks/chronos/
 # ===========================================================================
 
-# ═══════════════════════════════════════════════════════════════════════════
-# ZERO-SHOT Datasets (27) — Not seen during Chronos training
-# ═══════════════════════════════════════════════════════════════════════════
+# ===== ZERO-SHOT datasets (Chronos Bench II, 27 datasets) =====
 
-# --- Competition datasets ---
+# --- Competition ---
 
 - name: m4_quarterly
-  hf_repo: autogluon/chronos_datasets
   offset: -8
   prediction_length: 8
   num_rolls: 1
 
 - name: m4_yearly
-  hf_repo: autogluon/chronos_datasets
   offset: -6
   prediction_length: 6
   num_rolls: 1
 
 - name: m5
-  hf_repo: autogluon/chronos_datasets
   offset: -28
   prediction_length: 28
   num_rolls: 1
 
 - name: dominick
-  hf_repo: autogluon/chronos_datasets
   offset: -8
   prediction_length: 8
   num_rolls: 1
@@ -49,19 +46,16 @@
 # --- M1 competition ---
 
 - name: monash_m1_yearly
-  hf_repo: autogluon/chronos_datasets
   offset: -6
   prediction_length: 6
   num_rolls: 1
 
 - name: monash_m1_quarterly
-  hf_repo: autogluon/chronos_datasets
   offset: -8
   prediction_length: 8
   num_rolls: 1
 
 - name: monash_m1_monthly
-  hf_repo: autogluon/chronos_datasets
   offset: -18
   prediction_length: 18
   num_rolls: 1
@@ -69,19 +63,16 @@
 # --- M3 competition ---
 
 - name: monash_m3_monthly
-  hf_repo: autogluon/chronos_datasets
   offset: -18
   prediction_length: 18
   num_rolls: 1
 
 - name: monash_m3_yearly
-  hf_repo: autogluon/chronos_datasets
   offset: -6
   prediction_length: 6
   num_rolls: 1
 
 - name: monash_m3_quarterly
-  hf_repo: autogluon/chronos_datasets
   offset: -8
   prediction_length: 8
   num_rolls: 1
@@ -89,39 +80,33 @@
 # --- Energy & weather ---
 
 - name: monash_traffic
-  hf_repo: autogluon/chronos_datasets
   offset: -24
   prediction_length: 24
   num_rolls: 1
 
 - name: monash_australian_electricity
-  hf_repo: autogluon/chronos_datasets
   offset: -48
   prediction_length: 48
   num_rolls: 1
 
 - name: ercot
-  hf_repo: autogluon/chronos_datasets
   offset: -24
   prediction_length: 24
   num_rolls: 1
 
 - name: monash_weather
-  hf_repo: autogluon/chronos_datasets
   offset: -30
   prediction_length: 30
   num_rolls: 1
 
-# --- ETT datasets (extra repo) ---
+# --- ETT datasets ---
 
 - name: ETTm
-  hf_repo: autogluon/chronos_datasets_extra
   offset: -96
   prediction_length: 24
   num_rolls: 1
 
 - name: ETTh
-  hf_repo: autogluon/chronos_datasets_extra
   offset: -24
   prediction_length: 24
   num_rolls: 1
@@ -129,19 +114,16 @@
 # --- Finance ---
 
 - name: exchange_rate
-  hf_repo: autogluon/chronos_datasets
   offset: -30
   prediction_length: 30
   num_rolls: 1
 
 - name: nn5
-  hf_repo: autogluon/chronos_datasets
   offset: -56
   prediction_length: 56
   num_rolls: 1
 
 - name: monash_nn5_weekly
-  hf_repo: autogluon/chronos_datasets
   offset: -8
   prediction_length: 8
   num_rolls: 1
@@ -149,13 +131,11 @@
 # --- Healthcare & macro ---
 
 - name: monash_covid_deaths
-  hf_repo: autogluon/chronos_datasets
   offset: -30
   prediction_length: 30
   num_rolls: 1
 
 - name: monash_fred_md
-  hf_repo: autogluon/chronos_datasets
   offset: -12
   prediction_length: 12
   num_rolls: 1
@@ -163,19 +143,16 @@
 # --- Tourism ---
 
 - name: monash_tourism_monthly
-  hf_repo: autogluon/chronos_datasets
   offset: -24
   prediction_length: 24
   num_rolls: 1
 
 - name: monash_tourism_quarterly
-  hf_repo: autogluon/chronos_datasets
   offset: -8
   prediction_length: 8
   num_rolls: 1
 
 - name: monash_tourism_yearly
-  hf_repo: autogluon/chronos_datasets
   offset: -4
   prediction_length: 4
   num_rolls: 1
@@ -183,115 +160,93 @@
 # --- Other zero-shot ---
 
 - name: monash_car_parts
-  hf_repo: autogluon/chronos_datasets
   offset: -12
   prediction_length: 12
   num_rolls: 1
 
 - name: monash_hospital
-  hf_repo: autogluon/chronos_datasets
   offset: -12
   prediction_length: 12
   num_rolls: 1
 
 - name: monash_cif_2016
-  hf_repo: autogluon/chronos_datasets
   offset: -12
   prediction_length: 12
   num_rolls: 1
 
-# ═══════════════════════════════════════════════════════════════════════════
-# IN-DOMAIN Datasets (9 unique — not already in zero-shot above)
-# ═══════════════════════════════════════════════════════════════════════════
-# Note: m4_hourly, m4_monthly, monash_traffic, monash_australian_electricity
-#       are already listed above. Only unique in-domain datasets below.
+# ===== IN-DOMAIN only datasets (not in zero-shot above) =====
 
 - name: electricity_15min
-  hf_repo: autogluon/chronos_datasets
   offset: -5376
   prediction_length: 24
   num_rolls: 1
 
 - name: monash_electricity_hourly
-  hf_repo: autogluon/chronos_datasets
   offset: -24
   prediction_length: 24
   num_rolls: 1
 
 - name: monash_electricity_weekly
-  hf_repo: autogluon/chronos_datasets
   offset: -8
   prediction_length: 8
   num_rolls: 1
 
 - name: monash_kdd_cup_2018
-  hf_repo: autogluon/chronos_datasets
   offset: -48
   prediction_length: 48
   num_rolls: 1
 
 - name: m4_daily
-  hf_repo: autogluon/chronos_datasets
   offset: -14
   prediction_length: 14
   num_rolls: 1
 
 - name: m4_hourly
-  hf_repo: autogluon/chronos_datasets
   offset: -48
   prediction_length: 48
   num_rolls: 1
 
 - name: m4_monthly
-  hf_repo: autogluon/chronos_datasets
   offset: -18
   prediction_length: 18
   num_rolls: 1
 
 - name: m4_weekly
-  hf_repo: autogluon/chronos_datasets
   offset: -13
   prediction_length: 13
   num_rolls: 1
 
 - name: monash_pedestrian_counts
-  hf_repo: autogluon/chronos_datasets
   offset: -48
   prediction_length: 48
   num_rolls: 1
 
 - name: taxi_30min
-  hf_repo: autogluon/chronos_datasets
   offset: -48
   prediction_length: 48
   num_rolls: 1
 
 - name: uber_tlc_hourly
-  hf_repo: autogluon/chronos_datasets
   offset: -24
   prediction_length: 24
   num_rolls: 1
 
 - name: uber_tlc_daily
-  hf_repo: autogluon/chronos_datasets
   offset: -7
   prediction_length: 7
   num_rolls: 1
 
 - name: monash_rideshare
-  hf_repo: autogluon/chronos_datasets
   offset: -24
   prediction_length: 24
   num_rolls: 1
 
 - name: monash_temperature_rain
-  hf_repo: autogluon/chronos_datasets
   offset: -30
   prediction_length: 30
   num_rolls: 1
 
 - name: monash_london_smart_meters
-  hf_repo: autogluon/chronos_datasets
   offset: -48
   prediction_length: 48
   num_rolls: 1

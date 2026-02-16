@@ -1,0 +1,94 @@
+# ===========================================================================
+# fev-bench Benchmark Configuration
+# ===========================================================================
+# fev-bench: Comprehensive time series forecasting evaluation benchmark.
+# 100 tasks across 96 unique datasets, including 46 tasks with covariates.
+#
+# Paper: arXiv:2503.05495
+# Package: https://pypi.org/project/fev/
+#
+# Protocol:
+#   - Primary metric: SQL (Scaled Quantile Loss)
+#   - Win Rate: with tie handling (0.5 for ties)
+#   - Skill Score: 1 - gmean(clipped relative errors)
+#   - Bootstrap CI: B=1000, seed=123, task-level resampling
+#   - Non-overlapping rolling windows (1-20 per task)
+#   - Quantiles: {0.1, 0.2, ..., 0.9}
+#
+# Metrics: SQL, MASE, WQL, WAPE, Win Rate, Skill Score
+# Aggregation: Win rate + skill score with bootstrap CI
+#
+# Expected time: ~3 hr (A100 GPU)
+#
+# NOTE: This benchmark uses the fev library adapter, not the
+# standard Chronos-style YAML evaluator. The config below documents
+# available datasets for reference and CLI integration.
+#
+# Local data: /group-volume/ts-dataset/benchmarks/fev_bench/
+# Requires: pip install fev (v0.7.0+)
+#
+# Usage:
+#   python run_benchmark.py \
+#       --model-path /path/to/model \
+#       --benchmarks fev_bench \
+#       --fev-data /group-volume/ts-dataset/benchmarks/fev_bench/
+# ===========================================================================
+
+# Available datasets (~48 directories):
+datasets_root: /group-volume/ts-dataset/benchmarks/fev_bench/
+
+datasets:
+  - ETT
+  - LOOP_SEATTLE
+  - M_DENSE
+  - SZ_TAXI
+  - australian_tourism
+  - bizitobs_l2c
+  - boomlet
+  - ecdc_ili
+  - entsoe
+  - epf_be
+  - epf_de
+  - epf_fr
+  - epf_np
+  - epf_pjm
+  - ercot
+  - favorita_stores
+  - favorita_transactions
+  - fred_md_2025
+  - fred_qd_2025
+  - gvar
+  - hermes
+  - hierarchical_sales
+  - hospital
+  - hospital_admissions
+  - jena_weather
+  - kdd_cup_2022
+  - m5
+  - proenfo_bull
+  - proenfo_cockatoo
+  - proenfo_gfc12
+  - proenfo_gfc14
+  - proenfo_gfc17
+  - proenfo_hog
+  - proenfo_pdb
+  - redset
+  - restaurant
+  - rohlik_orders
+  - rohlik_sales
+  - rossmann
+  - solar
+  - solar_with_weather
+  - uci_air_quality
+  - uk_covid_nation
+  - uk_covid_utla
+  - us_consumption
+  - walmart
+  - world_co2_emissions
+  - world_life_expectancy
+  - world_tourism
+
+subsets:
+  - all           # All 100 tasks
+  - univariate    # ~54 univariate tasks
+  - covariate     # ~46 tasks with covariates

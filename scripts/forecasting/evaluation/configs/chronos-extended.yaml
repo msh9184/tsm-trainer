@@ -1,0 +1,93 @@
+# ===========================================================================
+# Chronos Extended Benchmark (15 datasets)
+# ===========================================================================
+# Thorough validation subset for training-time evaluation.
+# Includes all lite datasets + 10 additional zero-shot datasets.
+# Covers: hourly, daily, monthly, quarterly, yearly frequencies.
+# Domains: competition, transport, healthcare, energy, tourism, retail, macro.
+#
+# Expected time: ~15 min (A100 GPU), ~3 hr (CPU)
+# Metrics: WQL, MASE (simple average aggregation)
+#
+# Local data: datasets_root / {name}/
+#   Default: /group-volume/ts-dataset/benchmarks/chronos/
+# ===========================================================================
+
+# --- Lite subset (5 datasets) ---
+
+- name: m4_hourly
+  offset: -48
+  prediction_length: 48
+  num_rolls: 1
+
+- name: m4_monthly
+  offset: -18
+  prediction_length: 18
+  num_rolls: 1
+
+- name: monash_weather
+  offset: -30
+  prediction_length: 30
+  num_rolls: 1
+
+- name: nn5
+  offset: -56
+  prediction_length: 56
+  num_rolls: 1
+
+- name: exchange_rate
+  offset: -30
+  prediction_length: 30
+  num_rolls: 1
+
+# --- Extended additions (10 datasets) ---
+
+- name: monash_traffic
+  offset: -24
+  prediction_length: 24
+  num_rolls: 1
+
+- name: monash_covid_deaths
+  offset: -30
+  prediction_length: 30
+  num_rolls: 1
+
+- name: monash_fred_md
+  offset: -12
+  prediction_length: 12
+  num_rolls: 1
+
+- name: m4_quarterly
+  offset: -8
+  prediction_length: 8
+  num_rolls: 1
+
+- name: m4_yearly
+  offset: -6
+  prediction_length: 6
+  num_rolls: 1
+
+- name: monash_tourism_monthly
+  offset: -24
+  prediction_length: 24
+  num_rolls: 1
+
+- name: dominick
+  offset: -8
+  prediction_length: 8
+  num_rolls: 1
+
+- name: monash_m3_monthly
+  offset: -18
+  prediction_length: 18
+  num_rolls: 1
+
+- name: monash_australian_electricity
+  offset: -48
+  prediction_length: 48
+  num_rolls: 1
+
+- name: monash_hospital
+  offset: -12
+  prediction_length: 12
+  num_rolls: 1

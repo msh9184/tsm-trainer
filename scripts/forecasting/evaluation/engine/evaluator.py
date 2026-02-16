@@ -174,7 +174,7 @@ def load_dataset_from_config(
     from gluonts.dataset.split import split as gluonts_split
 
     ds_name = config["name"]
-    hf_repo = config["hf_repo"]
+    hf_repo = config.get("hf_repo", None)
     offset = config["offset"]
     prediction_length = config["prediction_length"]
     num_rolls = config.get("num_rolls", 1)
@@ -218,7 +218,7 @@ def load_dataset_from_config(
             rows, series_fields = _load_dataset_arrow_fallback(data_path)
             entries = rows
 
-    elif local_only:
+    elif local_only or hf_repo is None:
         searched = data_path or (Path(datasets_root) / ds_name if datasets_root else "N/A")
         raise FileNotFoundError(
             f"Dataset '{ds_name}' not found at local path: {searched}\n"
@@ -227,7 +227,7 @@ def load_dataset_from_config(
             f"  Hint: Run download_eval_datasets.py first, or check the dataset name."
         )
     else:
-        # Load from HuggingFace (uses cache) — only when local_only is False
+        # Load from HuggingFace (uses cache) — only when local_only is False and hf_repo is set
         import datasets as hf_datasets
         trust_remote_code = hf_repo == "autogluon/chronos_datasets_extra"
         logger.info(f"  Loading {ds_name} from HuggingFace: {hf_repo}")
@@ -470,8 +470,8 @@ def validate_config(config_path: str | Path) -> list[str]:
     if len(configs) == 0:
         return [f"Config file is empty: {config_path}"]
 
-    required_fields = {"name": str, "hf_repo": str, "offset": int, "prediction_length": int}
-    optional_fields = {"num_rolls": int, "split": str, "data_dir": str, "local_only": bool}
+    required_fields = {"name": str, "offset": int, "prediction_length": int}
+    optional_fields = {"hf_repo": str, "num_rolls": int, "split": str, "data_dir": str, "local_only": bool}
 
     for idx, entry in enumerate(configs):
         prefix = f"Entry {idx} ({entry.get('name', '???')})"

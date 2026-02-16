@@ -15,6 +15,7 @@ Supports multiple benchmark suites, local-first data loading, and comprehensive 
   - [2. Verify Data Availability](#2-verify-data-availability-dry-run)
   - [3. Run Evaluation](#3-run-evaluation)
   - [4. View Results](#4-view-results)
+- [Training-Time Validation](#training-time-validation)
 - [CLI Reference](#cli-reference)
 - [Example Output](#example-output)
 - [Reference Performance](#reference-performance)
@@ -31,15 +32,15 @@ cd scripts/forecasting/evaluation
 # Step 1: Verify data and model availability
 python run_benchmark.py \
     --model-path /path/to/chronos-2 \
-    --benchmarks lite \
-    --datasets-root /path/to/datasets/ \
+    --benchmarks chronos_lite \
+    --datasets-root /group-volume/ts-dataset/benchmarks/chronos/ \
     --dry-run
 
 # Step 2: Run evaluation
 python run_benchmark.py \
     --model-path /path/to/chronos-2 \
-    --benchmarks lite \
-    --datasets-root /path/to/datasets/ \
+    --benchmarks chronos_lite \
+    --datasets-root /group-volume/ts-dataset/benchmarks/chronos/ \
     --output-dir results/experiments/ \
     --device cuda --torch-dtype bfloat16
 ```
@@ -48,18 +49,33 @@ python run_benchmark.py \
 
 ## Supported Benchmarks
 
-| Benchmark | Datasets | Description | Est. Time (A100) | Est. Time (CPU) |
-|-----------|----------|-------------|-------------------|-----------------|
-| `lite` | 5 | Quick validation (diverse frequency mix) | ~3 min | ~40 min |
-| `extended` | 15 | Thorough validation (frequency + domain diversity) | ~15 min | ~3 hr |
-| `chronos_i` | 15 | Chronos Benchmark I — in-domain datasets | ~30 min | ~5 hr |
-| `chronos_ii` | 27 | Chronos Benchmark II — zero-shot datasets | ~60 min | ~10 hr |
-| `gift_eval` | ~98 | GIFT-Eval (23 datasets, multi-config) | ~2 hr | N/A |
-| `fev_bench` | 100 | fev-bench (task-level with bootstrap CI) | ~3 hr | N/A |
+### Chronos Benchmarks (Paper-Aligned)
+
+| Benchmark | Config | Datasets | Description | Est. Time (A100) |
+|-----------|--------|----------|-------------|-------------------|
+| `chronos_lite` | `chronos-lite.yaml` | 5 | Quick validation (diverse frequency mix) | ~3 min |
+| `chronos_extended` | `chronos-extended.yaml` | 15 | Thorough validation (frequency + domain diversity) | ~15 min |
+| `chronos_i` | `chronos-i.yaml` | 15 | Chronos Benchmark I — in-domain datasets | ~30 min |
+| `chronos_ii` | `chronos-ii.yaml` | 27 | Chronos Benchmark II — zero-shot datasets | ~60 min |
+| `chronos_full` | `chronos-full.yaml` | 42 | All Chronos datasets (I + II combined) | ~90 min |
+
+### External Benchmarks (Library-Based)
+
+| Benchmark | Config | Tasks | Description | Est. Time (A100) |
+|-----------|--------|-------|-------------|-------------------|
+| `gift_eval` | `gift-eval.yaml` | ~98 | GIFT-Eval (23 datasets, multi-config) | ~2 hr |
+| `fev_bench` | `fev-bench.yaml` | 100 | fev-bench (task-level with bootstrap CI) | ~3 hr |
+
+### Backward-Compatible Aliases
+
+| Alias | Maps to |
+|-------|---------|
+| `lite` | `chronos_lite` |
+| `extended` | `chronos_extended` |
 
 ### Benchmark Details
 
-#### `lite` — Quick Validation (5 datasets)
+#### `chronos_lite` — Quick Validation (5 datasets)
 
 Designed for rapid sanity checks during training. Covers hourly, daily, and monthly frequencies across different domains.
 
@@ -71,17 +87,42 @@ Designed for rapid sanity checks during training. Covers hourly, daily, and mont
 | nn5 | 111 | 56 | Daily | Finance (ATM) |
 | exchange_rate | 8 | 30 | Business-daily | Finance (FX) |
 
-#### `extended` — Thorough Validation (15 datasets)
+#### `chronos_extended` — Thorough Validation (15 datasets)
 
-Includes all `lite` datasets plus 10 additional datasets covering transport, healthcare, energy, retail, tourism, and macro-economics.
+Includes all `chronos_lite` datasets plus 10 additional datasets covering transport, healthcare, energy, retail, tourism, and macro-economics.
 
-#### `chronos_i` / `chronos_ii` — Chronos Paper Benchmarks
+#### `chronos_i` — Chronos Benchmark I (In-Domain)
 
-The official benchmark suites from the Chronos papers:
-- **Chronos I (in-domain)**: 15 datasets that were part of the training corpus. Measures how well the model fits seen data distributions.
-- **Chronos II (zero-shot)**: 27 datasets NOT in the training corpus. Measures generalization to unseen domains and frequencies.
+The official in-domain benchmark from the Chronos paper:
+- **15 datasets** that were part of the training corpus.
+- Measures how well the model fits seen data distributions.
+- Aggregation: **Geometric mean of relative scores vs. Seasonal Naive** (lower = better; <1.0 means better than baseline).
 
-Both use **geometric mean of relative scores vs. Seasonal Naive** for aggregation (lower = better; <1.0 means better than baseline).
+#### `chronos_ii` — Chronos Benchmark II (Zero-Shot)
+
+The official zero-shot benchmark from the Chronos-2 paper:
+- **27 datasets** NOT in the training corpus.
+- Measures generalization to unseen domains and frequencies.
+- Aggregation: **Geometric mean of relative scores vs. Seasonal Naive**.
+
+#### `chronos_full` — All Chronos Datasets
+
+Combined: Chronos I (15) + Chronos II (27) = **42 unique datasets**.
+Use for final model evaluation before release.
+
+#### `gift_eval` — GIFT-Eval
+
+Comprehensive benchmark from Salesforce AI Research:
+- 23 base datasets, ~98 task configurations (short/medium/long horizons).
+- Requires: `pip install gift-eval`
+- Local data: `/group-volume/ts-dataset/benchmarks/gift_eval/`
+
+#### `fev_bench` — fev-bench
+
+Comprehensive forecasting evaluation benchmark:
+- 100 tasks across 96 unique datasets, including 46 with covariates.
+- Requires: `pip install fev`
+- Local data: `/group-volume/ts-dataset/benchmarks/fev_bench/`
 
 ---
 
@@ -129,7 +170,7 @@ Where `m` is the seasonal period (e.g., 24 for hourly, 7 for daily, 12 for month
 | Method | Used By | Description |
 |--------|---------|-------------|
 | **Geometric Mean** | Chronos I/II | `gmean(model_metric / baseline_metric)` per dataset. Ratio < 1.0 = model is better. |
-| **Simple Average** | Lite, Extended | `mean(metric)` across datasets |
+| **Simple Average** | Chronos Lite/Extended | `mean(metric)` across datasets |
 | **Win Rate** | fev-bench | Fraction of tasks where model beats baseline (0.5 for ties) |
 | **Skill Score** | fev-bench | `1 - gmean(clip(model/baseline, [0.01, 100]))`. Positive = better. |
 
@@ -139,24 +180,27 @@ Where `m` is the seasonal period (e.g., 24 for hourly, 7 for daily, 12 for month
 
 ### 1. Prepare Datasets
 
-Download datasets to a local directory. All datasets are loaded from local disk — **no internet connection is required at evaluation time**.
+All benchmark datasets are pre-downloaded to local disk on the GPU server:
+
+```
+/group-volume/ts-dataset/benchmarks/
+├── chronos/       # 42 datasets (Chronos I + II)
+├── fev_bench/     # ~48 datasets
+└── gift_eval/     # ~30 datasets
+```
+
+For a fresh setup, download datasets to a local directory:
 
 ```bash
 cd scripts/forecasting/evaluation
 
-# Download datasets for lite/extended benchmarks
+# Download for Chronos benchmarks
 python download_eval_datasets.py \
-    --config configs/lite-benchmark.yaml \
-    --output-dir /path/to/datasets/ \
-    --dry-run   # Preview first
-
-python download_eval_datasets.py \
-    --config configs/lite-benchmark.yaml \
+    --config configs/chronos-lite.yaml \
     --output-dir /path/to/datasets/
 
-# Download for full Chronos benchmarks
 python download_eval_datasets.py \
-    --config configs/zero-shot.yaml configs/in-domain.yaml \
+    --config configs/chronos-i.yaml configs/chronos-ii.yaml \
     --output-dir /path/to/datasets/
 ```
 
@@ -167,13 +211,7 @@ The datasets will be stored in Arrow IPC format:
 │   └── data-00000-of-00001.arrow
 ├── m4_monthly/
 │   └── data-00000-of-00001.arrow
-├── monash_weather/
-│   ├── data-00000-of-00002.arrow
-│   └── data-00001-of-00002.arrow
-├── nn5/
-│   └── data-00000-of-00001.arrow
-└── exchange_rate/
-    └── data-00000-of-00001.arrow
+└── ...
 ```
 
 ### 2. Verify Data Availability (Dry Run)
@@ -183,37 +221,9 @@ Before running evaluation, verify that all datasets and the model are accessible
 ```bash
 python run_benchmark.py \
     --model-path /path/to/chronos-2 \
-    --benchmarks lite \
-    --datasets-root /path/to/datasets/ \
+    --benchmarks chronos_lite \
+    --datasets-root /group-volume/ts-dataset/benchmarks/chronos/ \
     --dry-run
-```
-
-Expected output:
-```
-========================================================================
-  DRY RUN — Checking data and model availability
-========================================================================
-
-  Model path: /path/to/chronos-2 [EXISTS]
-    Config files: ['config.json']
-
-  --- Benchmark: lite ---
-    m4_hourly: [FOUND] 1 data file(s), 5.7 MB
-    m4_monthly: [FOUND] 1 data file(s), 173.0 MB
-    monash_weather: [FOUND] 2 data file(s), 656.7 MB
-    nn5: [FOUND] 1 data file(s), 1.0 MB
-    exchange_rate: [FOUND] 1 data file(s), 0.7 MB
-
-  --- Environment ---
-    Python: 3.10.12
-    PyTorch: 2.6.0
-    CUDA: True
-    PyArrow: 16.1.0
-    Datasets: 2.17.1
-    GluonTS: 0.15.1
-
-  Dry run complete. No evaluation was performed.
-========================================================================
 ```
 
 ### 3. Run Evaluation
@@ -223,54 +233,36 @@ Expected output:
 ```bash
 python run_benchmark.py \
     --model-path /path/to/chronos-2 \
-    --benchmarks lite \
-    --datasets-root /path/to/datasets/ \
+    --benchmarks chronos_lite \
+    --datasets-root /group-volume/ts-dataset/benchmarks/chronos/ \
     --output-dir results/experiments/ \
     --device cuda \
     --torch-dtype bfloat16 \
     --batch-size 32
 ```
 
-#### Option B: CPU Evaluation (No GPU Required)
-
-```bash
-python run_benchmark.py \
-    --model-path /path/to/chronos-2 \
-    --benchmarks lite \
-    --datasets-root /path/to/datasets/ \
-    --output-dir results/experiments/ \
-    --device cpu \
-    --torch-dtype float32
-```
-
-> **Note**: When `--device cuda` is specified but CUDA is unavailable, the framework automatically falls back to CPU with a warning.
-
-#### Option C: Multiple Benchmarks
+#### Option B: Multiple Benchmarks
 
 ```bash
 python run_benchmark.py \
     --model-path /path/to/chronos-2 \
     --benchmarks chronos_i chronos_ii \
-    --datasets-root /path/to/datasets/ \
+    --datasets-root /group-volume/ts-dataset/benchmarks/chronos/ \
     --output-dir results/experiments/ \
     --device cuda --torch-dtype bfloat16
 ```
 
-#### Option D: Chronos-Bolt Models
+#### Option C: Full Evaluation Suite
 
 ```bash
 python run_benchmark.py \
-    --model-path /path/to/chronos-bolt-base \
-    --benchmarks lite \
-    --datasets-root /path/to/datasets/ \
+    --model-path /path/to/chronos-2 \
+    --benchmarks chronos_full \
+    --datasets-root /group-volume/ts-dataset/benchmarks/chronos/ \
     --device cuda --torch-dtype bfloat16
 ```
 
-The framework automatically detects the model type (Chronos-2 vs. Chronos-Bolt) from the model path.
-
 ### 4. View Results
-
-After evaluation completes, results are stored in the experiment directory:
 
 ```bash
 # View the markdown report
@@ -279,15 +271,60 @@ cat results/experiments/exp_20260216_124836/report.md
 # View per-dataset results
 cat results/experiments/exp_20260216_124836/chronos_lite.csv
 
-# View summary metrics
-cat results/experiments/exp_20260216_124836/chronos_lite_summary.json
-
 # Compare multiple models
 python compare_models.py \
     --results-dirs results/experiments/exp_A results/experiments/exp_B \
     --model-names "Chronos-2" "Our Model" \
     --format markdown
 ```
+
+---
+
+## Training-Time Validation
+
+During training, benchmark evaluation runs periodically to monitor model quality.
+
+### Configuration (in training YAML)
+
+```yaml
+# Benchmark config — choose from evaluation/configs/:
+#   chronos-lite.yaml      — 5 datasets, ~3 min (quick validation)
+#   chronos-extended.yaml  — 15 datasets, ~15 min (thorough validation)
+#   chronos-i.yaml         — 15 datasets, ~30 min (Chronos Bench I)
+#   chronos-ii.yaml        — 27 datasets, ~60 min (Chronos Bench II)
+#   chronos-full.yaml      — 42 datasets, ~90 min (all Chronos datasets)
+benchmark_config: "configs/chronos-lite.yaml"
+benchmark_eval_steps: 200
+benchmark_top_k_checkpoints: 3
+benchmark_batch_size: 32
+
+# Checkpoint selection metric: "wql" | "mase" | "composite"
+benchmark_checkpoint_metric: "composite"
+benchmark_composite_weights:
+  wql: 0.6
+  mase: 0.4
+
+# Local datasets root (Chronos benchmarks)
+benchmark_datasets_root: "/group-volume/ts-dataset/benchmarks/chronos"
+
+# Evaluation timeout (seconds, 0 = unlimited)
+benchmark_eval_timeout: 600
+```
+
+### Path Resolution
+
+The training script resolves benchmark config paths in order:
+1. `scripts/forecasting/training/{benchmark_config}` (training dir)
+2. `scripts/forecasting/evaluation/{benchmark_config}` (evaluation dir)
+3. Project root
+
+### Available Metrics for Checkpoint Selection
+
+| Metric | Description | Best For |
+|--------|-------------|----------|
+| `wql` | Weighted Quantile Loss | Probabilistic forecast quality |
+| `mase` | Mean Absolute Scaled Error | Point forecast accuracy |
+| `composite` | Weighted WQL + MASE | Balanced quality signal |
 
 ---
 
@@ -299,7 +336,8 @@ python run_benchmark.py [OPTIONS]
 Required:
   --model-path PATH        Path to model checkpoint or HuggingFace model ID
   --benchmarks NAME [...]  Benchmark(s) to run:
-                           chronos_i, chronos_ii, lite, extended, gift_eval, fev_bench
+                           chronos_i, chronos_ii, chronos_lite, chronos_extended,
+                           chronos_full, lite, extended, gift_eval, fev_bench
 
 Optional:
   --output-dir DIR         Base directory for results (default: results/experiments/)
@@ -316,7 +354,7 @@ Optional:
 
 ## Example Output
 
-### Console Output (Lite Benchmark, CPU)
+### Console Output (Chronos Lite Benchmark)
 
 ```
 ========================================================================
@@ -324,62 +362,30 @@ Optional:
 ========================================================================
   Experiment : exp_20260216_124836
   Model      : /path/to/chronos-2
-  Benchmarks : lite
-  Device     : cpu (float32)
+  Benchmarks : chronos_lite
+  Device     : cuda (bfloat16)
   Batch size : 32
-  Data root  : /path/to/datasets/
+  Data root  : /group-volume/ts-dataset/benchmarks/chronos/
   Output     : results/experiments/exp_20260216_124836
 ========================================================================
 
-Loading Chronos-2 model: /path/to/chronos-2 (device=cpu)
-Model loaded in 19.9s
+Loading Chronos-2 model: /path/to/chronos-2 (device=cuda)
+Model loaded in 2.3s
 
 ========================================================================
-  [1/1] BENCHMARK: lite
+  [1/1] BENCHMARK: chronos_lite
 ========================================================================
-Evaluating benchmark: lite-benchmark (5 datasets, model=chronos-2)
-  [1/5] m4_hourly:      WQL=0.0265, MASE=0.8106 (17.6s)
-  [2/5] m4_monthly:     WQL=0.0926, MASE=0.9224 (1079.0s)
-  [3/5] monash_weather: WQL=0.1253, MASE=0.7741 (1196.3s)
-  [4/5] nn5:            WQL=0.1488, MASE=0.5768 (4.2s)
-  [5/5] exchange_rate:  WQL=0.0121, MASE=1.8520 (2.7s)
+Evaluating benchmark: chronos-lite (5 datasets, model=chronos-2)
+  [1/5] m4_hourly:      WQL=0.0265, MASE=0.8106 (3.2s)
+  [2/5] m4_monthly:     WQL=0.0926, MASE=0.9224 (45.1s)
+  [3/5] monash_weather: WQL=0.1253, MASE=0.7741 (38.7s)
+  [4/5] nn5:            WQL=0.1488, MASE=0.5768 (1.2s)
+  [5/5] exchange_rate:  WQL=0.0121, MASE=1.8520 (0.8s)
 
-Results saved: results/experiments/exp_20260216_124836/chronos_lite.csv
-Summary saved: results/experiments/exp_20260216_124836/chronos_lite_summary.json
-
-  lite completed in 2299.8s
+  chronos_lite completed in 89.0s
     avg_mase: 0.9872
     avg_wql: 0.0811
     n_datasets: 5
-
-========================================================================
-  EVALUATION COMPLETE
-  Benchmarks : 1 passed, 0 failed
-  Total time : 2322.4s
-  Results    : results/experiments/exp_20260216_124836
-  Report     : results/experiments/exp_20260216_124836/report.md
-========================================================================
-```
-
-### Per-Dataset CSV (`chronos_lite.csv`)
-
-```csv
-dataset,model,MASE,WQL
-exchange_rate,chronos-2,1.8520,0.0121
-m4_hourly,chronos-2,0.8106,0.0265
-m4_monthly,chronos-2,0.9224,0.0926
-monash_weather,chronos-2,0.7741,0.1253
-nn5,chronos-2,0.5768,0.1488
-```
-
-### Summary JSON (`chronos_lite_summary.json`)
-
-```json
-{
-  "avg_wql": 0.0811,
-  "avg_mase": 0.9872,
-  "n_datasets": 5
-}
 ```
 
 ---
@@ -388,10 +394,7 @@ nn5,chronos-2,0.5768,0.1488
 
 Published and verified baseline model performance for comparison.
 
-### Lite Benchmark — Chronos-2 (Verified)
-
-Results from evaluating `amazon/chronos-2` on the lite benchmark.
-Our framework produces results that **exactly match** the reference:
+### Chronos Lite Benchmark — Chronos-2 (Verified)
 
 | Dataset | WQL | MASE |
 |---------|-----|------|
@@ -421,9 +424,6 @@ Geometric mean of per-dataset relative scores vs. Seasonal Naive baseline.
 
 ### Chronos Benchmark II (Zero-shot) — Aggregated Relative Scores
 
-Geometric mean of per-dataset relative scores vs. Seasonal Naive baseline.
-**Lower is better** (< 1.0 means outperforming the baseline).
-
 | Model | Params | Rel. WQL | Rel. MASE |
 |-------|--------|----------|-----------|
 | Chronos-Bolt Base | 205M | **0.624** | **0.791** |
@@ -435,8 +435,6 @@ Geometric mean of per-dataset relative scores vs. Seasonal Naive baseline.
 | Chronos-Bolt Tiny | 3M | 0.668 | 0.845 |
 | Chronos-T5 Mini | 20M | 0.689 | 0.841 |
 | Chronos-T5 Tiny | 8M | 0.711 | 0.870 |
-
-> **Source**: Results extracted from the Chronos/Chronos-2 papers and verified against the official evaluation scripts. Reference CSV files are available in the `results/` directory.
 
 ---
 
@@ -462,15 +460,18 @@ scripts/forecasting/evaluation/
 │
 ├── benchmarks/                   # Pluggable benchmark adapters
 │   ├── base.py                   #   BenchmarkAdapter ABC (interface)
-│   ├── chronos_bench.py          #   Chronos I/II, Lite, Extended
+│   ├── chronos_bench.py          #   Chronos I/II, Lite, Extended, Full
 │   ├── gift_eval.py              #   GIFT-Eval adapter
 │   └── fev_bench.py              #   fev-bench adapter
 │
 ├── configs/                      # Benchmark configuration (YAML)
-│   ├── lite-benchmark.yaml       #   5 datasets for quick validation
-│   ├── extended-benchmark.yaml   #   15 datasets for thorough validation
-│   ├── in-domain.yaml            #   Chronos Benchmark I (15 datasets)
-│   └── zero-shot.yaml            #   Chronos Benchmark II (27 datasets)
+│   ├── chronos-lite.yaml         #   5 datasets — quick validation
+│   ├── chronos-extended.yaml     #   15 datasets — thorough validation
+│   ├── chronos-i.yaml            #   15 datasets — Chronos Bench I (in-domain)
+│   ├── chronos-ii.yaml           #   27 datasets — Chronos Bench II (zero-shot)
+│   ├── chronos-full.yaml         #   42 datasets — all Chronos datasets
+│   ├── gift-eval.yaml            #   GIFT-Eval reference config
+│   └── fev-bench.yaml            #   fev-bench reference config
 │
 ├── results/                      # Reference baseline results (CSV)
 │   ├── seasonal-naive-*.csv      #   Seasonal Naive baseline scores
@@ -485,10 +486,12 @@ scripts/forecasting/evaluation/
 
 ### Design Principles
 
-- **Local-first data loading**: All datasets loaded from local disk. If a dataset is not found locally, a clear error is raised — no silent downloads.
+- **Local-first data loading**: All datasets loaded from local disk via `datasets_root`. No network access required at evaluation time.
+- **Paper-aligned benchmarks**: Config names match paper benchmark names (chronos_i, chronos_ii, gift_eval, fev_bench).
 - **Arrow IPC fallback**: Handles `datasets` library version mismatches gracefully via direct PyArrow reader.
 - **Shape contract**: `BaseForecaster.predict_quantiles()` returns `(N, Q, H)`. Assertions enforce this at every stage.
 - **Pluggable adapters**: Each benchmark is an independent adapter implementing `BenchmarkAdapter`. Adding a new benchmark = one new file.
+- **hf_repo optional**: Dataset configs no longer require `hf_repo`; `datasets_root` resolves all local paths.
 
 ---
 
@@ -501,28 +504,9 @@ results/experiments/
 └── exp_20260216_124836/
     ├── config.json                    # Experiment config (model, device, env)
     ├── summary.json                   # Overall results + timing
-    ├── report.md                      # Human-readable report (6 sections)
-    │                                  #   1. Executive Summary
-    │                                  #   2. Per-Benchmark Results
-    │                                  #   3. Per-Dataset Results
-    │                                  #   4. Environment Info
-    │                                  #   5. Timing Breakdown
-    │                                  #   6. Reproduction Command
+    ├── report.md                      # Human-readable report
     ├── chronos_lite.csv               # Per-dataset results (CSV)
     └── chronos_lite_summary.json      # Aggregated summary (JSON)
-```
-
-For multiple benchmarks:
-```
-results/experiments/
-└── exp_20260216_150000/
-    ├── config.json
-    ├── summary.json
-    ├── report.md
-    ├── chronos_bench_in_domain.csv
-    ├── chronos_bench_in_domain_summary.json
-    ├── chronos_bench_zero_shot.csv
-    └── chronos_bench_zero_shot_summary.json
 ```
 
 ---
@@ -531,10 +515,10 @@ results/experiments/
 
 | Benchmark | A100 (bfloat16) | A100 (float32) | CPU (72 cores) |
 |-----------|-----------------|----------------|----------------|
-| `lite` (5 ds) | ~3 min | ~5 min | ~40 min |
-| `extended` (15 ds) | ~15 min | ~25 min | ~3 hr |
+| `chronos_lite` (5 ds) | ~3 min | ~5 min | ~40 min |
+| `chronos_extended` (15 ds) | ~15 min | ~25 min | ~3 hr |
 | `chronos_i` (15 ds) | ~30 min | ~50 min | ~5 hr |
 | `chronos_ii` (27 ds) | ~60 min | ~90 min | ~10 hr |
+| `chronos_full` (42 ds) | ~90 min | ~120 min | ~12 hr |
 
 > **Tip**: Use `--torch-dtype bfloat16` on GPU for faster inference with minimal accuracy impact.
-> The lite benchmark produces identical results with bfloat16 and float32 (verified).

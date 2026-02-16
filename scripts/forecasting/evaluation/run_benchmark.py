@@ -34,12 +34,15 @@ Usage:
         --device cpu --torch-dtype float32
 
 Supported benchmarks:
-    chronos_i    — Chronos Benchmark I (15 in-domain datasets)
-    chronos_ii   — Chronos Benchmark II (27 zero-shot datasets)
-    lite         — Lite Benchmark (5 datasets, ~3 min on A100)
-    extended     — Extended Benchmark (15 datasets, ~15 min on A100)
-    gift_eval    — GIFT-Eval (~98 configs, requires gift-eval library)
-    fev_bench    — fev-bench (100 tasks, requires fev library)
+    chronos_i        — Chronos Benchmark I (15 in-domain datasets)
+    chronos_ii       — Chronos Benchmark II (27 zero-shot datasets)
+    chronos_lite     — Chronos Lite (5 datasets, ~3 min on A100)
+    chronos_extended — Chronos Extended (15 datasets, ~15 min on A100)
+    chronos_full     — Chronos Full (42 datasets, ~90 min on A100)
+    gift_eval        — GIFT-Eval (~98 configs, requires gift-eval library)
+    fev_bench        — fev-bench (100 tasks, requires fev library)
+    lite             — Alias for chronos_lite
+    extended         — Alias for chronos_extended
 """
 
 import argparse
@@ -263,13 +266,23 @@ def load_forecaster(args):
 # ---------------------------------------------------------------------------
 
 def get_adapter(benchmark_name: str, args):
-    """Create a benchmark adapter by name."""
+    """Create a benchmark adapter by name.
+
+    Available benchmarks:
+        chronos_i    — Chronos Benchmark I (15 in-domain datasets)
+        chronos_ii   — Chronos Benchmark II (27 zero-shot datasets)
+        chronos_lite  — Quick validation subset (5 datasets, ~3 min)
+        chronos_extended — Thorough validation (15 datasets, ~15 min)
+        chronos_full  — All Chronos datasets combined (42 datasets)
+        gift_eval    — GIFT-Eval (~98 tasks, requires gift-eval library)
+        fev_bench    — fev-bench (100 tasks, requires fev library)
+    """
     configs_dir = SCRIPT_DIR / "configs"
 
     if benchmark_name == "chronos_ii":
         from benchmarks.chronos_bench import ChronosBenchmarkAdapter
         return ChronosBenchmarkAdapter(
-            config_path=configs_dir / "zero-shot.yaml",
+            config_path=configs_dir / "chronos-ii.yaml",
             benchmark_type="zero-shot",
             datasets_root=args.datasets_root,
             batch_size=args.batch_size,
@@ -277,22 +290,30 @@ def get_adapter(benchmark_name: str, args):
     elif benchmark_name == "chronos_i":
         from benchmarks.chronos_bench import ChronosBenchmarkAdapter
         return ChronosBenchmarkAdapter(
-            config_path=configs_dir / "in-domain.yaml",
+            config_path=configs_dir / "chronos-i.yaml",
             benchmark_type="in-domain",
             datasets_root=args.datasets_root,
             batch_size=args.batch_size,
         )
-    elif benchmark_name == "lite":
+    elif benchmark_name in ("lite", "chronos_lite"):
         from benchmarks.chronos_bench import ChronosLiteBenchmarkAdapter
         return ChronosLiteBenchmarkAdapter(
-            config_path=configs_dir / "lite-benchmark.yaml",
+            config_path=configs_dir / "chronos-lite.yaml",
             datasets_root=args.datasets_root,
             batch_size=args.batch_size,
         )
-    elif benchmark_name == "extended":
+    elif benchmark_name in ("extended", "chronos_extended"):
         from benchmarks.chronos_bench import ChronosLiteBenchmarkAdapter
         return ChronosLiteBenchmarkAdapter(
-            config_path=configs_dir / "extended-benchmark.yaml",
+            config_path=configs_dir / "chronos-extended.yaml",
+            datasets_root=args.datasets_root,
+            batch_size=args.batch_size,
+        )
+    elif benchmark_name == "chronos_full":
+        from benchmarks.chronos_bench import ChronosBenchmarkAdapter
+        return ChronosBenchmarkAdapter(
+            config_path=configs_dir / "chronos-full.yaml",
+            benchmark_type="full",
             datasets_root=args.datasets_root,
             batch_size=args.batch_size,
         )
@@ -311,7 +332,8 @@ def get_adapter(benchmark_name: str, args):
     else:
         raise ValueError(
             f"Unknown benchmark: {benchmark_name}. "
-            f"Available: chronos_i, chronos_ii, lite, extended, gift_eval, fev_bench"
+            f"Available: chronos_i, chronos_ii, chronos_lite, chronos_extended, "
+            f"chronos_full, lite, extended, gift_eval, fev_bench"
         )
 
 
@@ -350,10 +372,13 @@ def run_benchmarks(args):
     from engine.evaluator import validate_config
     configs_dir = SCRIPT_DIR / "configs"
     config_map = {
-        "chronos_ii": "zero-shot.yaml",
-        "chronos_i": "in-domain.yaml",
-        "lite": "lite-benchmark.yaml",
-        "extended": "extended-benchmark.yaml",
+        "chronos_ii": "chronos-ii.yaml",
+        "chronos_i": "chronos-i.yaml",
+        "lite": "chronos-lite.yaml",
+        "chronos_lite": "chronos-lite.yaml",
+        "extended": "chronos-extended.yaml",
+        "chronos_extended": "chronos-extended.yaml",
+        "chronos_full": "chronos-full.yaml",
     }
     for benchmark_name in args.benchmarks:
         config_file = config_map.get(benchmark_name)
@@ -951,7 +976,10 @@ def parse_args():
     )
     parser.add_argument(
         "--benchmarks", nargs="+", required=True,
-        choices=["chronos_i", "chronos_ii", "lite", "extended", "gift_eval", "fev_bench"],
+        choices=[
+            "chronos_i", "chronos_ii", "chronos_lite", "chronos_extended",
+            "chronos_full", "lite", "extended", "gift_eval", "fev_bench",
+        ],
         help="Benchmark(s) to run",
     )
 

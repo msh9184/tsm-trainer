@@ -1,9 +1,22 @@
-# Chronos-2 Base (120M) Training Config
+# ===========================================================================
+# Chronos-2 Base (120M) — Pretraining Config (Stage 1)
+# ===========================================================================
 # Architecture: Encoder-only with Group Attention + Time Attention
-# Reference: arXiv:2510.15821
+# Reference: arXiv:2510.15821 (Chronos-2: From Univariate to Universal)
 #
-# Target: 8 nodes x 8 GPUs = 64x A100 80GB (mpirun)
-# Effective batch size: 12 * 64 * 1 = 768
+# Training from random initialization (no pretrained weights).
+# Two-stage training strategy:
+#   Stage 1 (this config): context_length=2048, 500K steps, LR=1e-4
+#   Stage 2: context_length=8192, 50K steps, LR=3e-5
+#            → see chronos2-base-stage2.yaml
+#
+# GPU Target: 8 nodes × 8 GPUs = 64× A100 80GB (mpirun)
+# Effective batch size: 1536 × 1 (single GPU) or distributed
+#
+# Usage:
+#   bash scripts/forecasting/training/train.sh \
+#       --config scripts/forecasting/training/configs/chronos2-base.yaml
+# ===========================================================================
 
 # ===========================================================================
 # Model Architecture (matches amazon/chronos-2 config)
@@ -28,12 +41,13 @@ context_length: 2048          # Stage 1: 2048, Stage 2: 8192
 input_patch_size: 16
 input_patch_stride: 16
 output_patch_size: 16
-prediction_length: 64         # output_patch_size * max_output_patches_used
+prediction_length: 64         # output_patch_size × max_output_patches used
 max_output_patches: 64
 use_reg_token: true
 use_arcsinh: true
-time_encoding_scale: 8192    # Keep at max context_length
+time_encoding_scale: 8192    # Keep at max context_length across stages
 
+# 21 quantile levels (Chronos-2 paper specification)
 quantiles:
   - 0.01
   - 0.05
@@ -58,14 +72,16 @@ quantiles:
   - 0.99
 
 # ===========================================================================
-# Model Initialization
+# Model Initialization (scratch = random init)
 # ===========================================================================
 random_init: true
-# model_id: "amazon/chronos-2"  # Uncomment for fine-tuning
+# model_id: not needed for scratch training
 
 # ===========================================================================
 # Training Data
 # ===========================================================================
+# 90% TSMixup real data + 10% KernelSynth synthetic data
+# All data must be pre-downloaded as Arrow IPC format on local disk.
 training_data_paths:
   - "/group-volume/ts-dataset/chronos_datasets/training_corpus_tsmixup_10m"
   - "/group-volume/ts-dataset/chronos_datasets/training_corpus_kernel_synth_1m"
@@ -73,26 +89,20 @@ probability:
   - 0.9
   - 0.1
 
-# Validation (optional)
-# validation_data_paths:
-#   - "/group-volume/ts-dataset/chronos_datasets/australian_electricity_demand"
-# max_val_series: 10000
-
 # Limit training series loaded into memory at once.
 # Full 11M series requires ~50GB+ RAM per rank.
-# When set, a RANDOM subset of this size is selected from the full dataset
-# (not just the first N entries), preserving data distribution.
-# The random selection uses a deterministic seed for reproducibility.
-# Recommendation: Start with 1M for testing, increase for full training.
+# When set, a RANDOM subset of this size is selected (deterministic seed).
+# Recommendation: 1M for testing, 5M+ for production.
 max_train_series: 1_000_000
 
+# Minimum past observations required (series shorter than this are skipped)
+min_past: 60
+
 # ===========================================================================
-# Training Hyperparameters (64 GPU)
+# Training Hyperparameters
 # ===========================================================================
-# Effective batch = per_device_train_batch_size * world_size * gradient_accumulation_steps
-#                 = 12 * 64 * 1 = 768
-max_steps: 200_000
-per_device_train_batch_size: 12
+max_steps: 500_000
+per_device_train_batch_size: 1536
 gradient_accumulation_steps: 1
 learning_rate: 1.0e-4
 lr_scheduler_type: "cosine"
@@ -106,28 +116,53 @@ seed: 42
 # Saving & Logging
 # ===========================================================================
 output_dir: "./output/chronos2-base-stage1"
-save_steps: 10_000
-log_steps: 100
+save_steps: 200
+log_steps: 20
 save_total_limit: 3
 report_to: "tensorboard"
-health_report_interval: 1000
+health_report_interval: 200
 
 # ===========================================================================
-# Lite Benchmark (periodic forecast quality evaluation)
+# Benchmark Evaluation (Training-Time Validation)
 # ===========================================================================
-# Runs WQL/MASE evaluation on a small set of benchmark datasets during training.
-# Requires pre-downloaded datasets (see scripts/evaluation/download_eval_datasets.py).
-benchmark_config: "configs/lite-benchmark.yaml"
-benchmark_eval_steps: 10_000
+# Evaluation configs reference: scripts/forecasting/evaluation/configs/
+# Path resolution: tries script_dir → evaluation dir → project root
+# All evaluation datasets must be pre-downloaded to datasets_root.
+#
+# Available benchmark configs:
+#   chronos-lite.yaml      — 5 datasets, ~3 min (quick validation)
+#   chronos-extended.yaml  — 15 datasets, ~15 min (thorough validation)
+#   chronos-i.yaml         — 15 datasets, ~30 min (Chronos Bench I, in-domain)
+#   chronos-ii.yaml        — 27 datasets, ~60 min (Chronos Bench II, zero-shot)
+#   chronos-full.yaml      — 42 datasets, ~90 min (all Chronos datasets)
+#
+# Checkpoint selection metric:
+#   "wql"       — Track best WQL (probabilistic forecast quality)
+#   "mase"      — Track best MASE (point forecast accuracy)
+#   "composite" — Weighted combination: 0.6×WQL + 0.4×MASE
+
+benchmark_config: "configs/chronos-lite.yaml"
+benchmark_eval_steps: 200
 benchmark_top_k_checkpoints: 3
 benchmark_batch_size: 32
+benchmark_checkpoint_metric: "composite"
+benchmark_composite_weights:
+  wql: 0.6
+  mase: 0.4
+
+# Root directory for pre-downloaded evaluation datasets (Chronos benchmarks)
+# Each dataset is expected at: {datasets_root}/{dataset_name}/
+benchmark_datasets_root: "/group-volume/ts-dataset/benchmarks/chronos"
+
+# Maximum seconds per evaluation (0 = no timeout)
+benchmark_eval_timeout: 600
 
 # ===========================================================================
 # Performance
 # ===========================================================================
-dataloader_num_workers: 4
+dataloader_num_workers: 8
 torch_compile: false
-gradient_checkpointing: true
+gradient_checkpointing: true  # Memory saving for 120M model
 
 # ===========================================================================
 # Distributed Training
@@ -135,7 +170,7 @@ gradient_checkpointing: true
 # DDP settings (used when fsdp is empty/disabled)
 ddp_bucket_cap_mb: 25
 
-# FSDP settings (recommended for multi-node 64 GPU)
+# FSDP settings (recommended for multi-node 64 GPU training)
 fsdp: "full_shard auto_wrap"
 fsdp_config:
   fsdp_transformer_layer_cls_to_wrap: "Chronos2EncoderBlock"
@@ -148,8 +183,6 @@ fsdp_config:
   fsdp_offload_params: false
 
 # ===========================================================================
-# Resume
+# Resume (uncomment to continue from a checkpoint)
 # ===========================================================================
 # resume_from_checkpoint: "./output/chronos2-base-stage1/checkpoint-50000"
-
-min_past: 60

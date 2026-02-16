@@ -1,9 +1,15 @@
-# Chronos-2 Small (28M) Training Config
+# ===========================================================================
+# Chronos-2 Small (28M) — Pretraining Config
+# ===========================================================================
 # Architecture: Encoder-only with Group Attention + Time Attention
-# Reference: arXiv:2510.15821
+# Reference: arXiv:2510.15821 (Chronos-2: From Univariate to Universal)
 #
-# Target: 8 nodes x 8 GPUs = 64x A100 80GB (mpirun)
-# Effective batch size: 16 * 64 * 1 = 1024
+# GPU Target: 8 nodes × 8 GPUs = 64× A100 80GB (mpirun)
+#
+# Usage:
+#   bash scripts/forecasting/training/train.sh \
+#       --config scripts/forecasting/training/configs/chronos2-small.yaml
+# ===========================================================================
 
 # ===========================================================================
 # Model Architecture (matches autogluon/chronos-2-small config)
@@ -73,10 +79,11 @@ probability:
   - 0.9
   - 0.1
 
+min_past: 60
+
 # ===========================================================================
-# Training Hyperparameters (64 GPU)
+# Training Hyperparameters
 # ===========================================================================
-# Effective batch = 16 * 64 * 1 = 1024
 max_steps: 200_000
 per_device_train_batch_size: 16
 gradient_accumulation_steps: 1
@@ -92,31 +99,30 @@ seed: 42
 # Saving & Logging
 # ===========================================================================
 output_dir: "./output/chronos2-small-stage1"
-save_steps: 10_000
-log_steps: 100
+save_steps: 200
+log_steps: 20
 save_total_limit: 3
 report_to: "tensorboard"
+health_report_interval: 200
 
 # ===========================================================================
 # Benchmark Evaluation (Training-Time Validation)
 # ===========================================================================
-benchmark_config: "configs/lite-benchmark.yaml"
-benchmark_tier2_config: "configs/extended-benchmark.yaml"
-benchmark_eval_steps: 10_000
-benchmark_tier2_eval_steps: 50_000
+benchmark_config: "configs/chronos-lite.yaml"
+benchmark_eval_steps: 200
+benchmark_top_k_checkpoints: 3
+benchmark_batch_size: 32
 benchmark_checkpoint_metric: "composite"
 benchmark_composite_weights:
   wql: 0.6
   mase: 0.4
-benchmark_top_k_checkpoints: 5
-benchmark_batch_size: 64
-benchmark_datasets_root: "/group-volume/ts-dataset/chronos_datasets"
+benchmark_datasets_root: "/group-volume/ts-dataset/benchmarks/chronos"
 benchmark_eval_timeout: 600
 
 # ===========================================================================
 # Performance
 # ===========================================================================
-dataloader_num_workers: 4
+dataloader_num_workers: 8
 torch_compile: false
 
 # ===========================================================================
@@ -135,5 +141,3 @@ ddp_bucket_cap_mb: 25
 #   fsdp_sync_module_states: true
 #   fsdp_state_dict_type: "FULL_STATE_DICT"
 #   fsdp_offload_params: false
-
-min_past: 60

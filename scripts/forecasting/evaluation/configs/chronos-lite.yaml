@@ -1,0 +1,38 @@
+# ===========================================================================
+# Chronos Lite Benchmark (5 datasets)
+# ===========================================================================
+# Quick validation subset for training-time evaluation.
+# Covers hourly, daily, and monthly frequencies across different domains.
+#
+# Expected time: ~3 min (A100 GPU), ~40 min (CPU)
+# Metrics: WQL, MASE (simple average aggregation)
+#
+# Local data: datasets_root / {name}/
+#   Default: /group-volume/ts-dataset/benchmarks/chronos/
+#   Pass via: --datasets-root (CLI) or benchmark_datasets_root (training config)
+# ===========================================================================
+
+- name: m4_hourly
+  offset: -48
+  prediction_length: 48
+  num_rolls: 1
+
+- name: m4_monthly
+  offset: -18
+  prediction_length: 18
+  num_rolls: 1
+
+- name: monash_weather
+  offset: -30
+  prediction_length: 30
+  num_rolls: 1
+
+- name: nn5
+  offset: -56
+  prediction_length: 56
+  num_rolls: 1
+
+- name: exchange_rate
+  offset: -30
+  prediction_length: 30
+  num_rolls: 1

@@ -1,10 +1,17 @@
-# Chronos-2 Base (120M) Stage 2 Training Config
+# ===========================================================================
+# Chronos-2 Base (120M) — Stage 2 Training Config
+# ===========================================================================
 # Extends context window from 2048 → 8192
 # Continues from Stage 1 checkpoint
-# Reference: arXiv:2510.15821
+# Reference: arXiv:2510.15821 (Chronos-2: From Univariate to Universal)
 #
-# Target: 8 nodes x 8 GPUs = 64x A100 80GB (mpirun)
-# Effective batch size: 4 * 64 * 2 = 512
+# GPU Target: 8 nodes × 8 GPUs = 64× A100 80GB (mpirun)
+# Effective batch size: 4 × 64 × 2 = 512
+#
+# Usage:
+#   bash scripts/forecasting/training/train.sh \
+#       --config scripts/forecasting/training/configs/chronos2-base-stage2.yaml
+# ===========================================================================
 
 # ===========================================================================
 # Model Architecture (same as Stage 1)
@@ -74,10 +81,11 @@ probability:
   - 0.9
   - 0.1
 
+min_past: 256
+
 # ===========================================================================
-# Training Hyperparameters (64 GPU, reduced batch due to 4x context)
+# Training Hyperparameters (reduced batch due to 4× context)
 # ===========================================================================
-# Effective batch = 4 * 64 * 2 = 512
 max_steps: 50_000
 per_device_train_batch_size: 4
 gradient_accumulation_steps: 2
@@ -93,36 +101,30 @@ seed: 42
 # Saving & Logging
 # ===========================================================================
 output_dir: "./output/chronos2-base-stage2"
-save_steps: 5_000
-log_steps: 100
+save_steps: 200
+log_steps: 20
 save_total_limit: 3
 report_to: "tensorboard"
-health_report_interval: 1000
+health_report_interval: 200
 
 # ===========================================================================
 # Benchmark Evaluation (Training-Time Validation)
 # ===========================================================================
-# Stage 2 uses the same tiered benchmark system as Stage 1.
-benchmark_config: "configs/lite-benchmark.yaml"
-benchmark_tier2_config: "configs/extended-benchmark.yaml"
-
-benchmark_eval_steps: 5_000
-benchmark_tier2_eval_steps: 25_000
-
+benchmark_config: "configs/chronos-lite.yaml"
+benchmark_eval_steps: 200
+benchmark_top_k_checkpoints: 3
+benchmark_batch_size: 32
 benchmark_checkpoint_metric: "composite"
 benchmark_composite_weights:
   wql: 0.6
   mase: 0.4
-
-benchmark_top_k_checkpoints: 5
-benchmark_batch_size: 64
-benchmark_datasets_root: "/group-volume/ts-dataset/chronos_datasets"
+benchmark_datasets_root: "/group-volume/ts-dataset/benchmarks/chronos"
 benchmark_eval_timeout: 600
 
 # ===========================================================================
 # Performance
 # ===========================================================================
-dataloader_num_workers: 4
+dataloader_num_workers: 8
 torch_compile: false
 gradient_checkpointing: true
 
@@ -131,7 +133,7 @@ gradient_checkpointing: true
 # ===========================================================================
 ddp_bucket_cap_mb: 25
 
-# FSDP recommended for Stage 2 (8192 context uses ~4x more memory)
+# FSDP recommended for Stage 2 (8192 context uses ~4× more memory)
 fsdp: "full_shard auto_wrap"
 fsdp_config:
   fsdp_transformer_layer_cls_to_wrap: "Chronos2EncoderBlock"
@@ -142,5 +144,3 @@ fsdp_config:
   fsdp_sync_module_states: true
   fsdp_state_dict_type: "FULL_STATE_DICT"
   fsdp_offload_params: false
-
-min_past: 256

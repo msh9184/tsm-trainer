@@ -1,20 +1,19 @@
 # ===========================================================================
-# Chronos-2 Fine-tuning Config
+# Chronos-2 Base (120M) — Fine-tuning Config
 # ===========================================================================
 # Fine-tune pretrained amazon/chronos-2 on custom or extended data.
 # Loads weights from a locally pre-downloaded HF cache snapshot.
 # Reference: arXiv:2510.15821 (Chronos-2: From Univariate to Universal)
 #
 # GPU Target: 8 nodes × 8 GPUs = 64× A100 80GB (mpirun)
-# Effective batch size: 8 × 64 × 1 = 512
 #
 # Usage:
 #   bash scripts/forecasting/training/train.sh \
-#       --config scripts/forecasting/training/configs/chronos2-finetune.yaml
+#       --config scripts/forecasting/training/configs/chronos2-base-finetune.yaml
 #
 #   # Override model path via CLI:
 #   bash scripts/forecasting/training/train.sh \
-#       --config scripts/forecasting/training/configs/chronos2-finetune.yaml \
+#       --config scripts/forecasting/training/configs/chronos2-base-finetune.yaml \
 #       --model-id /group-volume/model/timeseries/models--amazon--chronos-2/snapshots/0f8a440441931157957e2be1a9bce66627d99c76
 # ===========================================================================
 
@@ -37,7 +36,7 @@ model_id: "/group-volume/model/timeseries/models--amazon--chronos-2/snapshots/0f
 
 # Alternative model sources (uncomment one):
 # model_id: "amazon/chronos-2"                                    # HF Hub (needs network)
-# model_id: "./output/chronos2-scratch-stage1/final-checkpoint"   # From scratch training
+# model_id: "./output/chronos2-base-stage1/final-checkpoint"      # From pretraining
 
 # NOTE: Architecture params (d_model, num_layers, etc.) are auto-loaded from
 # the pretrained model's config.json. Only override if needed:
@@ -103,11 +102,10 @@ probability:
 min_past: 60
 
 # ===========================================================================
-# Fine-tuning Hyperparameters (64 GPU)
+# Fine-tuning Hyperparameters
 # ===========================================================================
-# Effective batch = per_device_train_batch_size × world_size × gradient_accumulation_steps
-#                 = 8 × 64 × 1 = 512
-max_steps: 50_000            # Fewer steps than pretraining
+# Lower LR and fewer steps than pretraining for stable fine-tuning.
+max_steps: 50_000
 per_device_train_batch_size: 8
 gradient_accumulation_steps: 1
 learning_rate: 1.0e-5        # 10× lower LR than pretraining
@@ -121,45 +119,38 @@ seed: 42
 # ===========================================================================
 # Saving & Logging
 # ===========================================================================
-output_dir: "./output/chronos2-finetune"
+output_dir: "./output/chronos2-base-finetune"
+save_steps: 200
+log_steps: 20
+save_total_limit: 3
 report_to: "tensorboard"
-
-# Checkpoint saving
-save_steps: 2_500
-save_total_limit: 5
-log_steps: 50
-
-# Health report
-health_report_interval: 500
+health_report_interval: 200
 
 # ===========================================================================
 # Benchmark Evaluation (Training-Time Validation)
 # ===========================================================================
-# Fine-tuning benefits from more frequent evaluation to catch overfitting.
+# Fine-tuning benefits from frequent evaluation to catch overfitting.
 #
-# Tier 1 (Lite): 5 datasets, ~3 min — check quality every 2,500 steps
-# Tier 2 (Extended): 15 datasets, ~15 min — deeper check every 10,000 steps
+# Available benchmark configs (in scripts/forecasting/evaluation/configs/):
+#   chronos-lite.yaml      — 5 datasets, ~3 min (quick validation)
+#   chronos-extended.yaml  — 15 datasets, ~15 min (thorough validation)
+#   chronos-i.yaml         — 15 datasets, ~30 min (Chronos Bench I, in-domain)
+#   chronos-ii.yaml        — 27 datasets, ~60 min (Chronos Bench II, zero-shot)
+#   chronos-full.yaml      — 42 datasets, ~90 min (all Chronos datasets)
 
-benchmark_config: "configs/lite-benchmark.yaml"
-benchmark_tier2_config: "configs/extended-benchmark.yaml"
-
-benchmark_eval_steps: 2_500
-benchmark_tier2_eval_steps: 10_000
-
-# Checkpoint selection metric
-# For fine-tuning, composite metric captures both probabilistic and point accuracy.
+benchmark_config: "configs/chronos-lite.yaml"
+benchmark_eval_steps: 200
+benchmark_top_k_checkpoints: 3
+benchmark_batch_size: 32
 benchmark_checkpoint_metric: "composite"
 benchmark_composite_weights:
   wql: 0.6
   mase: 0.4
 
-benchmark_top_k_checkpoints: 5
-benchmark_batch_size: 64
+# Root directory for pre-downloaded evaluation datasets (Chronos benchmarks)
+benchmark_datasets_root: "/group-volume/ts-dataset/benchmarks/chronos"
 
-# Local evaluation datasets root (all datasets pre-downloaded here)
-benchmark_datasets_root: "/group-volume/ts-dataset/chronos_datasets"
-
-# Evaluation timeout (seconds per tier, 0 = unlimited)
+# Evaluation timeout (seconds, 0 = unlimited)
 benchmark_eval_timeout: 600
 
 # ===========================================================================
@@ -189,4 +180,4 @@ ddp_bucket_cap_mb: 25
 # ===========================================================================
 # Resume (uncomment to continue from a checkpoint)
 # ===========================================================================
-# resume_from_checkpoint: "./output/chronos2-finetune/checkpoint-10000"
+# resume_from_checkpoint: "./output/chronos2-base-finetune/checkpoint-10000"

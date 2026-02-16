@@ -1,0 +1,168 @@
+# ===========================================================================
+# Chronos Benchmark II — Zero-Shot (27 datasets)
+# ===========================================================================
+# Official benchmark from the Chronos-2 paper (arXiv:2510.15821).
+# These 27 datasets were NOT seen during Chronos training.
+# Measures generalization to unseen domains and frequencies.
+#
+# Expected time: ~60 min (A100 GPU), ~10 hr (CPU)
+# Metrics: WQL, MASE
+# Aggregation: Geometric mean of relative scores vs. Seasonal Naive
+#   gmean(model_metric / baseline_metric) — lower is better, <1.0 = beats baseline
+#
+# Local data: datasets_root / {name}/
+#   Default: /group-volume/ts-dataset/benchmarks/chronos/
+# ===========================================================================
+
+# --- Competition datasets ---
+
+- name: m4_quarterly
+  offset: -8
+  prediction_length: 8
+  num_rolls: 1
+
+- name: m4_yearly
+  offset: -6
+  prediction_length: 6
+  num_rolls: 1
+
+- name: m5
+  offset: -28
+  prediction_length: 28
+  num_rolls: 1
+
+- name: dominick
+  offset: -8
+  prediction_length: 8
+  num_rolls: 1
+
+# --- M1 competition ---
+
+- name: monash_m1_yearly
+  offset: -6
+  prediction_length: 6
+  num_rolls: 1
+
+- name: monash_m1_quarterly
+  offset: -8
+  prediction_length: 8
+  num_rolls: 1
+
+- name: monash_m1_monthly
+  offset: -18
+  prediction_length: 18
+  num_rolls: 1
+
+# --- M3 competition ---
+
+- name: monash_m3_monthly
+  offset: -18
+  prediction_length: 18
+  num_rolls: 1
+
+- name: monash_m3_yearly
+  offset: -6
+  prediction_length: 6
+  num_rolls: 1
+
+- name: monash_m3_quarterly
+  offset: -8
+  prediction_length: 8
+  num_rolls: 1
+
+# --- Energy & weather ---
+
+- name: monash_traffic
+  offset: -24
+  prediction_length: 24
+  num_rolls: 1
+
+- name: monash_australian_electricity
+  offset: -48
+  prediction_length: 48
+  num_rolls: 1
+
+- name: ercot
+  offset: -24
+  prediction_length: 24
+  num_rolls: 1
+
+- name: monash_weather
+  offset: -30
+  prediction_length: 30
+  num_rolls: 1
+
+# --- ETT datasets ---
+
+- name: ETTm
+  offset: -96
+  prediction_length: 24
+  num_rolls: 1
+
+- name: ETTh
+  offset: -24
+  prediction_length: 24
+  num_rolls: 1
+
+# --- Finance ---
+
+- name: exchange_rate
+  offset: -30
+  prediction_length: 30
+  num_rolls: 1
+
+- name: nn5
+  offset: -56
+  prediction_length: 56
+  num_rolls: 1
+
+- name: monash_nn5_weekly
+  offset: -8
+  prediction_length: 8
+  num_rolls: 1
+
+# --- Healthcare & macro ---
+
+- name: monash_covid_deaths
+  offset: -30
+  prediction_length: 30
+  num_rolls: 1
+
+- name: monash_fred_md
+  offset: -12
+  prediction_length: 12
+  num_rolls: 1
+
+# --- Tourism ---
+
+- name: monash_tourism_monthly
+  offset: -24
+  prediction_length: 24
+  num_rolls: 1
+
+- name: monash_tourism_quarterly
+  offset: -8
+  prediction_length: 8
+  num_rolls: 1
+
+- name: monash_tourism_yearly
+  offset: -4
+  prediction_length: 4
+  num_rolls: 1
+
+# --- Other zero-shot ---
+
+- name: monash_car_parts
+  offset: -12
+  prediction_length: 12
+  num_rolls: 1
+
+- name: monash_hospital
+  offset: -12
+  prediction_length: 12
+  num_rolls: 1
+
+- name: monash_cif_2016
+  offset: -12
+  prediction_length: 12
+  num_rolls: 1

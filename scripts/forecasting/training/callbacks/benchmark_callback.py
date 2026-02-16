@@ -5,25 +5,25 @@ and hierarchical TensorBoard logging. Replaces LiteBenchmarkCallback
 with a more capable and extensible architecture.
 
 Features:
-- Tier 1 (Lite, 5 datasets, ~3 min): Every N steps for rapid quality signal
-- Tier 2 (Extended, 15 datasets, ~15 min): Every M steps for deeper validation
+- Configurable benchmark configs from scripts/forecasting/evaluation/configs/
+- Available configs: chronos-lite, chronos-extended, chronos-i, chronos-ii, chronos-full
 - Composite checkpoint metric: Weighted WQL + MASE
-- Per-dataset TensorBoard logging under benchmark/tier{N}/
+- Per-dataset TensorBoard logging under benchmark/
 - Top-K checkpoint management by configurable metric
 - Distributed training support (rank-0 only evaluation)
 - Evaluation timeout to prevent training hangs
 - Uses shared evaluation engine (no code duplication)
 
 Usage in training config YAML:
-    benchmark_config: configs/lite-benchmark.yaml
-    benchmark_eval_steps: 5000
-    benchmark_tier2_config: configs/extended-benchmark.yaml
-    benchmark_tier2_eval_steps: 20000
+    benchmark_config: configs/chronos-lite.yaml
+    benchmark_eval_steps: 200
     benchmark_top_k_checkpoints: 3
+    benchmark_batch_size: 32
     benchmark_checkpoint_metric: composite  # "wql" | "mase" | "composite"
     benchmark_composite_weights:
-      wql: 0.7
-      mase: 0.3
+      wql: 0.6
+      mase: 0.4
+    benchmark_datasets_root: /group-volume/ts-dataset/benchmarks/chronos
 """
 
 from __future__ import annotations
