@@ -97,8 +97,18 @@ class Aggregator:
         result = {}
         for col in relative.columns:
             values = relative[col].dropna().values
-            if len(values) > 0:
-                result[f"agg_rel_{col.lower()}"] = float(gmean(values))
+            # Filter to positive values (required for gmean; negative ratios
+            # indicate data issues)
+            positive = values[values > 0]
+            if len(positive) > 0:
+                if len(positive) < len(values):
+                    logger.warning(
+                        f"  Filtered {len(values) - len(positive)} non-positive "
+                        f"relative scores for {col} before gmean"
+                    )
+                # Use log-space computation for numerical stability
+                log_mean = np.mean(np.log(positive))
+                result[f"agg_rel_{col.lower()}"] = float(np.exp(log_mean))
             else:
                 result[f"agg_rel_{col.lower()}"] = float("nan")
 
@@ -281,6 +291,13 @@ class Aggregator:
             rows.append(row)
 
         table_df = pd.DataFrame(rows)
+
+        # Add ranking columns based on relative scores (lower is better)
+        for metric in metrics:
+            rel_col = f"Rel {metric}"
+            if rel_col in table_df.columns:
+                rank_col = f"Rank {metric}"
+                table_df[rank_col] = table_df[rel_col].rank(method="min").astype(int)
 
         if format == "markdown":
             return _format_markdown_table(table_df)

@@ -144,6 +144,9 @@ def _normalize_pipeline_output(
     This function handles type conversion and axis reordering to produce
     the (N, Q, H) format expected by BaseForecaster callers.
 
+    Uses both n_quantiles and prediction_length to disambiguate the output
+    shape, which is critical when H == Q (e.g., 9 quantiles with H=9).
+
     Parameters
     ----------
     quantiles : list, torch.Tensor, or np.ndarray
@@ -171,14 +174,25 @@ def _normalize_pipeline_output(
         )
 
     # Detect and swap: pipeline returns (N, H, Q), we need (N, Q, H).
-    # If last dim == n_quantiles and second dim != n_quantiles, swap.
-    # If H == Q (ambiguous), pipeline convention is (N, H, Q) so still swap.
-    if quantiles.shape[-1] == n_quantiles:
+    # Use both prediction_length and n_quantiles for robust disambiguation.
+    dim1, dim2 = quantiles.shape[1], quantiles.shape[2]
+
+    if dim1 == n_quantiles and dim2 == prediction_length:
+        # Already in (N, Q, H) format — no swap needed
+        pass
+    elif dim1 == prediction_length and dim2 == n_quantiles:
+        # Pipeline convention (N, H, Q) — swap to (N, Q, H)
         quantiles = quantiles.swapaxes(-1, -2)
-    elif quantiles.shape[1] == n_quantiles:
-        # Already in (N, Q, H) format
+    elif dim2 == n_quantiles and dim1 != n_quantiles:
+        # Last dim matches Q but first dim doesn't match H exactly
+        # (may happen with variable-length outputs) — swap
+        quantiles = quantiles.swapaxes(-1, -2)
+    elif dim1 == n_quantiles and dim2 != prediction_length:
+        # First dim matches Q — already (N, Q, H) with different H
         pass
     else:
+        # Ambiguous: neither dimension clearly matches.
+        # Default to pipeline convention (N, H, Q) and swap.
         logger.warning(
             f"Ambiguous pipeline output shape {quantiles.shape}: "
             f"expected Q={n_quantiles}, H={prediction_length}. "

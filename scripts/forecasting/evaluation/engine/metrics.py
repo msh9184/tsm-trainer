@@ -215,21 +215,34 @@ class MetricRegistry:
         n_series = y_true.shape[0]
         mase_values = []
 
+        n_skipped = 0
         for i in range(n_series):
             past = y_past[i]
             # Seasonal naive in-sample error
             if len(past) <= seasonal_period:
-                # Fallback: use absolute mean
-                scale = np.abs(past).mean()
+                # Series too short for seasonal differencing — use non-seasonal naive (m=1)
+                if len(past) > 1:
+                    naive_errors = np.abs(past[1:] - past[:-1])
+                    scale = naive_errors.mean()
+                else:
+                    n_skipped += 1
+                    continue
             else:
                 naive_errors = np.abs(past[seasonal_period:] - past[:-seasonal_period])
                 scale = naive_errors.mean()
 
             if scale == 0 or np.isnan(scale):
+                n_skipped += 1
                 continue  # skip constant series
 
             forecast_error = np.abs(y_true[i] - y_pred[i]).mean()
             mase_values.append(forecast_error / scale)
+
+        if n_skipped > 0:
+            logger.debug(
+                f"MASE: skipped {n_skipped}/{n_series} series "
+                f"(constant or too short for seasonal_period={seasonal_period})"
+            )
 
         if not mase_values:
             return float("nan")
@@ -399,9 +412,33 @@ class MetricRegistry:
             Seasonal period. Defaults to 1 if frequency is unknown.
         """
         # Normalize frequency string
-        freq_upper = freq.upper().replace("-", "").strip()
+        freq_clean = freq.strip().replace("-", "")
+
+        # Remove numeric prefix (e.g., "1H" → "H", "5T" → "5T")
+        # But keep it if it's a multiplier like "5T", "10T", "15T"
+        if len(freq_clean) > 1 and freq_clean[0] == "1" and not freq_clean[1].isdigit():
+            freq_clean = freq_clean[1:]
+
+        freq_upper = freq_clean.upper()
+
         # Handle common aliases
         if freq_upper.endswith("MIN"):
             freq_upper = freq_upper.replace("MIN", "T")
+        # Handle pandas offset aliases (added in newer pandas versions)
+        alias_map = {
+            "ME": "M",   # MonthEnd
+            "YE": "Y",   # YearEnd
+            "QE": "Q",   # QuarterEnd
+            "BME": "M",  # BusinessMonthEnd
+            "BQE": "Q",  # BusinessQuarterEnd
+            "BYE": "Y",  # BusinessYearEnd
+            "SME": "MS",  # SemiMonthEnd
+            "BH": "H",   # BusinessHour
+        }
+        freq_upper = alias_map.get(freq_upper, freq_upper)
 
-        return SEASONAL_PERIODS.get(freq_upper, 1)
+        period = SEASONAL_PERIODS.get(freq_upper, None)
+        if period is None:
+            logger.debug(f"Unknown frequency '{freq}' (normalized: '{freq_upper}'), defaulting to period=1")
+            return 1
+        return period

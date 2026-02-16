@@ -238,7 +238,35 @@ def load_dataset_from_config(
 
     # Convert to GluonTS univariate format
     first_entry = entries[0]
-    dataset_freq = pd.DatetimeIndex(first_entry["timestamp"]).to_period()[0].freqstr
+    try:
+        ts_index = pd.DatetimeIndex(first_entry["timestamp"])
+        dataset_freq = ts_index.to_period()[0].freqstr
+    except Exception:
+        # Fallback: infer frequency from timestamp differences
+        try:
+            ts_index = pd.DatetimeIndex(first_entry["timestamp"])
+            inferred = pd.infer_freq(ts_index)
+            if inferred is None:
+                # Use median difference as frequency estimate
+                diffs = np.diff(ts_index.asi8)
+                median_ns = np.median(diffs)
+                hours = median_ns / 3.6e12
+                if hours < 1:
+                    dataset_freq = "T"
+                elif hours < 24:
+                    dataset_freq = "H"
+                elif hours < 168:
+                    dataset_freq = "D"
+                elif hours < 720:
+                    dataset_freq = "W"
+                else:
+                    dataset_freq = "M"
+                logger.warning(f"  Could not detect exact frequency, estimated: {dataset_freq}")
+            else:
+                dataset_freq = inferred
+        except Exception as freq_err:
+            dataset_freq = "D"  # Safe default
+            logger.warning(f"  Frequency detection failed ({freq_err}), defaulting to '{dataset_freq}'")
 
     gts_dataset = []
     for entry in entries:
@@ -299,9 +327,12 @@ def generate_quantile_forecasts(
         )
         # predict_quantiles() returns (N, Q, H) per BaseForecaster contract.
         # QuantileForecast expects per-item (Q, H), so keep as-is.
-        assert quantiles.ndim == 3, (
-            f"Expected 3D output (N, Q, H), got shape {quantiles.shape}"
-        )
+        if quantiles.ndim != 3:
+            raise ValueError(
+                f"predict_quantiles() returned {quantiles.ndim}D array "
+                f"(shape={quantiles.shape}), expected 3D (N, Q, H). "
+                f"Check the forecaster's predict_quantiles() implementation."
+            )
         forecast_outputs.append(quantiles)
         n_batches += 1
         n_series_processed += len(batch)
