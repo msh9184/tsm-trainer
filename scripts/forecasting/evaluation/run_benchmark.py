@@ -51,10 +51,6 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
 logger = logging.getLogger("BenchmarkRunner")
 
 # Resolve paths for imports
@@ -126,12 +122,124 @@ def resolve_device(requested: str) -> str:
     return requested
 
 
+def validate_model_path(model_path: str) -> list[str]:
+    """Validate model path before loading.
+
+    Checks that the model directory exists and contains expected config files.
+    Returns list of warnings (empty = all good).
+    """
+    warnings = []
+    path = Path(model_path)
+
+    if not path.exists():
+        # Could be a HuggingFace model ID — skip local validation
+        return []
+
+    if not path.is_dir():
+        warnings.append(f"Model path is not a directory: {path}")
+        return warnings
+
+    # Check for expected config files
+    expected_configs = ["config.json"]
+    for cfg in expected_configs:
+        if not (path / cfg).exists():
+            warnings.append(f"Missing expected config file: {cfg}")
+
+    # Check for model weights
+    weight_patterns = ["*.safetensors", "*.bin", "pytorch_model*"]
+    has_weights = False
+    for pattern in weight_patterns:
+        if list(path.glob(pattern)):
+            has_weights = True
+            break
+    if not has_weights:
+        warnings.append("No model weight files found (*.safetensors, *.bin)")
+
+    return warnings
+
+
+def get_model_info(model_path: str) -> dict:
+    """Extract model metadata from config files."""
+    info = {"path": model_path}
+    path = Path(model_path)
+
+    if path.exists() and path.is_dir():
+        config_path = path / "config.json"
+        if config_path.exists():
+            try:
+                with open(config_path) as f:
+                    config = json.load(f)
+                info["model_type"] = config.get("model_type", "unknown")
+                info["hidden_size"] = config.get("hidden_size") or config.get("d_model")
+                info["num_layers"] = config.get("num_hidden_layers") or config.get("num_layers")
+                info["num_heads"] = config.get("num_attention_heads") or config.get("num_heads")
+            except Exception:
+                pass
+
+        # Count parameters from safetensors metadata
+        safetensors_files = list(path.glob("*.safetensors"))
+        if safetensors_files:
+            try:
+                from safetensors import safe_open
+                total_params = 0
+                for sf in safetensors_files:
+                    with safe_open(str(sf), framework="pt") as f:
+                        for key in f.keys():
+                            tensor = f.get_tensor(key)
+                            total_params += tensor.numel()
+                info["total_params"] = total_params
+                info["total_params_m"] = round(total_params / 1e6, 1)
+            except Exception:
+                pass
+
+        # Get total size on disk
+        total_size = sum(
+            f.stat().st_size
+            for f in path.rglob("*")
+            if f.is_file()
+        )
+        info["disk_size_gb"] = round(total_size / (1024 ** 3), 2)
+
+    return info
+
+
+def get_gpu_memory_stats() -> dict | None:
+    """Get current GPU memory usage stats."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return {
+                "allocated_gb": round(torch.cuda.memory_allocated() / (1024 ** 3), 2),
+                "reserved_gb": round(torch.cuda.memory_reserved() / (1024 ** 3), 2),
+                "peak_allocated_gb": round(torch.cuda.max_memory_allocated() / (1024 ** 3), 2),
+                "peak_reserved_gb": round(torch.cuda.max_memory_reserved() / (1024 ** 3), 2),
+            }
+    except Exception:
+        pass
+    return None
+
+
+def reset_gpu_memory_stats():
+    """Reset GPU peak memory tracking."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+    except Exception:
+        pass
+
+
 def load_forecaster(args):
-    """Load a forecaster from model path."""
+    """Load a forecaster from model path with pre-validation."""
     from engine.forecaster import Chronos2Forecaster, ChronosBoltForecaster
 
     model_path = args.model_path
     device = resolve_device(args.device)
+
+    # Validate model path
+    model_warnings = validate_model_path(model_path)
+    for w in model_warnings:
+        logger.warning(f"  Model validation: {w}")
 
     # Auto-detect model type
     if "bolt" in model_path.lower():
@@ -215,8 +323,21 @@ def run_benchmarks(args):
     """Run all selected benchmarks and save results."""
     start_time = time.time()
 
+    # Set random seed for reproducibility
+    if args.seed is not None:
+        import numpy as np
+        import torch
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(args.seed)
+        logger.info(f"Random seed set to {args.seed}")
+
     # Collect environment info
     env_info = collect_environment_info()
+
+    # Get model metadata
+    model_info = get_model_info(args.model_path)
 
     # Create output directory
     output_dir = Path(args.output_dir)
@@ -225,6 +346,26 @@ def run_benchmarks(args):
     experiment_dir = output_dir / args.experiment_name
     experiment_dir.mkdir(parents=True, exist_ok=True)
 
+    # Pre-validate benchmark configs
+    from engine.evaluator import validate_config
+    configs_dir = SCRIPT_DIR / "configs"
+    config_map = {
+        "chronos_ii": "zero-shot.yaml",
+        "chronos_i": "in-domain.yaml",
+        "lite": "lite-benchmark.yaml",
+        "extended": "extended-benchmark.yaml",
+    }
+    for benchmark_name in args.benchmarks:
+        config_file = config_map.get(benchmark_name)
+        if config_file:
+            config_path = configs_dir / config_file
+            errors = validate_config(config_path)
+            if errors:
+                logger.error(f"Config validation failed for {benchmark_name}:")
+                for err in errors:
+                    logger.error(f"  - {err}")
+                raise ValueError(f"Invalid benchmark config: {benchmark_name}")
+
     # Print banner
     logger.info("")
     logger.info("=" * 72)
@@ -232,9 +373,15 @@ def run_benchmarks(args):
     logger.info("=" * 72)
     logger.info(f"  Experiment : {args.experiment_name}")
     logger.info(f"  Model      : {args.model_path}")
+    if model_info.get("total_params_m"):
+        logger.info(f"  Parameters : {model_info['total_params_m']}M")
+    if model_info.get("model_type"):
+        logger.info(f"  Model type : {model_info['model_type']}")
     logger.info(f"  Benchmarks : {', '.join(args.benchmarks)}")
     logger.info(f"  Device     : {args.device} ({args.torch_dtype})")
     logger.info(f"  Batch size : {args.batch_size}")
+    if args.seed is not None:
+        logger.info(f"  Seed       : {args.seed}")
     if args.datasets_root:
         logger.info(f"  Data root  : {args.datasets_root}")
     logger.info(f"  Output     : {experiment_dir}")
@@ -249,22 +396,34 @@ def run_benchmarks(args):
             "path": args.model_path,
             "device": args.device,
             "dtype": args.torch_dtype,
+            **{k: v for k, v in model_info.items() if k != "path"},
         },
         "evaluation": {
             "benchmarks": args.benchmarks,
             "batch_size": args.batch_size,
             "datasets_root": args.datasets_root,
+            "seed": args.seed,
         },
         "environment": env_info,
     }
     with open(experiment_dir / "config.json", "w") as f:
         json.dump(config, f, indent=2)
 
+    # Reset GPU memory tracking
+    reset_gpu_memory_stats()
+
     # Load model
     model_load_start = time.time()
     forecaster = load_forecaster(args)
     model_load_time = time.time() - model_load_start
+    gpu_after_load = get_gpu_memory_stats()
     logger.info(f"Model loaded in {model_load_time:.1f}s")
+    if gpu_after_load:
+        logger.info(
+            f"  GPU memory after load: "
+            f"{gpu_after_load['allocated_gb']:.1f} GB allocated, "
+            f"{gpu_after_load['reserved_gb']:.1f} GB reserved"
+        )
 
     # Pre-validate datasets for all benchmarks
     if args.datasets_root:
@@ -378,6 +537,9 @@ def run_benchmarks(args):
     # Overall timing
     total_elapsed = time.time() - start_time
 
+    # Capture peak GPU memory
+    gpu_peak = get_gpu_memory_stats()
+
     # Save overall summary
     overall_summary = {
         "experiment_id": args.experiment_name,
@@ -389,6 +551,8 @@ def run_benchmarks(args):
             for k, v in benchmark_timings.items()
         },
         "benchmarks": all_summaries,
+        "model_info": model_info,
+        "gpu_memory": gpu_peak,
         "environment": env_info,
     }
     with open(experiment_dir / "summary.json", "w") as f:
@@ -398,6 +562,8 @@ def run_benchmarks(args):
     report = generate_report(
         all_results, all_summaries, args,
         total_elapsed, model_load_time, benchmark_timings, env_info,
+        model_info=model_info,
+        gpu_memory=gpu_peak,
     )
     report_path = experiment_dir / "report.md"
     with open(report_path, "w") as f:
@@ -411,6 +577,8 @@ def run_benchmarks(args):
     logger.info("  EVALUATION COMPLETE")
     logger.info(f"  Benchmarks : {n_ok} passed, {n_fail} failed")
     logger.info(f"  Total time : {total_elapsed:.1f}s")
+    if gpu_peak:
+        logger.info(f"  GPU peak   : {gpu_peak['peak_allocated_gb']:.1f} GB allocated")
     logger.info(f"  Results    : {experiment_dir}")
     logger.info(f"  Report     : {report_path}")
     logger.info("=" * 72)
@@ -443,6 +611,8 @@ def generate_report(
     model_load_time: float,
     benchmark_timings: dict,
     env_info: dict,
+    model_info: dict | None = None,
+    gpu_memory: dict | None = None,
 ) -> str:
     """Generate comprehensive markdown evaluation report."""
     lines = []
@@ -469,10 +639,18 @@ def generate_report(
     lines.append(f"| Item | Value |")
     lines.append(f"|------|-------|")
     lines.append(f"| Model | `{args.model_path}` |")
+    if model_info and model_info.get("total_params_m"):
+        lines.append(f"| Parameters | {model_info['total_params_m']}M |")
+    if model_info and model_info.get("model_type"):
+        lines.append(f"| Architecture | {model_info['model_type']} |")
     lines.append(f"| Device | {args.device} ({args.torch_dtype}) |")
     lines.append(f"| Benchmarks run | {n_ok} passed / {n_fail} failed |")
     lines.append(f"| Total time | {_fmt_time(total_elapsed)} |")
     lines.append(f"| Model load time | {_fmt_time(model_load_time)} |")
+    if gpu_memory and gpu_memory.get("peak_allocated_gb"):
+        lines.append(f"| GPU peak memory | {gpu_memory['peak_allocated_gb']:.1f} GB |")
+    if args.seed is not None:
+        lines.append(f"| Random seed | {args.seed} |")
     lines.append("")
 
     # Key metrics summary table
@@ -560,6 +738,22 @@ def generate_report(
     lines.append(f"| **Total** | **{_fmt_time(total_elapsed)}** |")
     lines.extend(["", ""])
 
+    # ---- GPU Memory ----
+    if gpu_memory:
+        lines.extend([
+            "---",
+            "",
+            "## 5b. GPU Memory",
+            "",
+            "| Metric | Value |",
+            "|--------|-------|",
+            f"| Peak allocated | {gpu_memory.get('peak_allocated_gb', 'N/A')} GB |",
+            f"| Peak reserved | {gpu_memory.get('peak_reserved_gb', 'N/A')} GB |",
+            f"| Current allocated | {gpu_memory.get('allocated_gb', 'N/A')} GB |",
+            f"| Current reserved | {gpu_memory.get('reserved_gb', 'N/A')} GB |",
+            "",
+        ])
+
     # ---- Reproduction ----
     lines.extend([
         "---",
@@ -578,6 +772,12 @@ def generate_report(
         f"    --device {args.device} \\",
         f"    --torch-dtype {args.torch_dtype} \\",
         f"    --batch-size {args.batch_size}",
+    ])
+    if args.seed is not None:
+        # Replace last line to add continuation
+        lines[-1] = lines[-1] + " \\"
+        lines.append(f"    --seed {args.seed}")
+    lines.extend([
         "```",
         "",
     ])
@@ -648,12 +848,25 @@ def _render_dataset_table(bm_name: str, results_df) -> list[str]:
 
     # Determine columns to show
     display_cols = ["dataset"]
-    for col in ["model", "WQL", "MASE", "sql", "crps", "smape"]:
+    for col in ["WQL", "MASE", "n_series", "elapsed_s", "sql", "crps", "smape"]:
         if col in results_df.columns:
             display_cols.append(col)
 
+    # Column display names
+    col_names = {
+        "dataset": "Dataset",
+        "WQL": "WQL",
+        "MASE": "MASE",
+        "n_series": "Series",
+        "elapsed_s": "Time(s)",
+        "sql": "SQL",
+        "crps": "CRPS",
+        "smape": "sMAPE",
+    }
+
     # Header
-    lines.append("| " + " | ".join(display_cols) + " |")
+    header = [col_names.get(c, c) for c in display_cols]
+    lines.append("| " + " | ".join(header) + " |")
     lines.append("|" + "|".join(["---"] * len(display_cols)) + "|")
 
     # Rows
@@ -664,8 +877,12 @@ def _render_dataset_table(bm_name: str, results_df) -> list[str]:
             if isinstance(val, float):
                 if np.isnan(val):
                     cells.append("FAILED")
+                elif col == "elapsed_s":
+                    cells.append(f"{val:.1f}")
                 else:
                     cells.append(f"{val:.4f}")
+            elif isinstance(val, int):
+                cells.append(f"{val:,}")
             else:
                 cells.append(str(val))
         lines.append("| " + " | ".join(cells) + " |")
@@ -675,8 +892,15 @@ def _render_dataset_table(bm_name: str, results_df) -> list[str]:
     avg_cells = ["**Average**"]
     for col in display_cols[1:]:
         if col in results_df.columns and results_df[col].dtype in ("float64", "float32"):
-            avg = results_df[col].dropna().mean()
-            avg_cells.append(f"**{avg:.4f}**")
+            if col == "elapsed_s":
+                total = results_df[col].dropna().sum()
+                avg_cells.append(f"**{total:.1f}** (total)")
+            elif col == "n_series":
+                total = int(results_df[col].dropna().sum())
+                avg_cells.append(f"**{total:,}** (total)")
+            else:
+                avg = results_df[col].dropna().mean()
+                avg_cells.append(f"**{avg:.4f}**")
         else:
             avg_cells.append("")
     lines.append("| " + " | ".join(avg_cells) + " |")
@@ -770,6 +994,12 @@ def parse_args():
         help="Result directories to compare against",
     )
 
+    # Reproducibility
+    parser.add_argument(
+        "--seed", type=int, default=None,
+        help="Random seed for reproducibility (sets numpy + torch seeds)",
+    )
+
     # Diagnostics
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -782,12 +1012,23 @@ def parse_args():
         help="Resume from checkpoint if previous run was interrupted",
     )
 
+    # Logging
+    parser.add_argument(
+        "--verbose", action="store_true",
+        help="Enable debug-level logging for detailed output",
+    )
+    parser.add_argument(
+        "--quiet", action="store_true",
+        help="Reduce logging to warnings and errors only",
+    )
+
     return parser.parse_args()
 
 
 def run_dry_run(args):
     """Check data availability and model loading without running evaluation."""
     import yaml
+    from engine.evaluator import validate_config
 
     logger.info("")
     logger.info("=" * 72)
@@ -801,6 +1042,17 @@ def run_dry_run(args):
         logger.info(f"  Model path: {model_path} [EXISTS]")
         config_files = list(model_path.glob("config*.json"))
         logger.info(f"    Config files: {[f.name for f in config_files]}")
+        model_warnings = validate_model_path(args.model_path)
+        for w in model_warnings:
+            logger.warning(f"    {w}")
+        if not model_warnings:
+            logger.info(f"    Model validation: OK")
+        # Show model info
+        info = get_model_info(args.model_path)
+        if info.get("total_params_m"):
+            logger.info(f"    Parameters: {info['total_params_m']}M")
+        if info.get("disk_size_gb"):
+            logger.info(f"    Disk size: {info['disk_size_gb']} GB")
     else:
         logger.warning(f"  Model path: {model_path} [NOT FOUND]")
 
@@ -825,6 +1077,15 @@ def run_dry_run(args):
         if not config_path.exists():
             logger.warning(f"    Config file NOT FOUND: {config_path}")
             continue
+
+        # Validate config schema
+        config_errors = validate_config(config_path)
+        if config_errors:
+            logger.warning(f"    Config validation FAILED:")
+            for err in config_errors:
+                logger.warning(f"      - {err}")
+        else:
+            logger.info(f"    Config validation: OK")
 
         with open(config_path) as f:
             configs = yaml.safe_load(f)
@@ -872,6 +1133,20 @@ def run_dry_run(args):
 
 if __name__ == "__main__":
     args = parse_args()
+
+    # Configure logging level
+    if args.verbose:
+        log_level = logging.DEBUG
+    elif args.quiet:
+        log_level = logging.WARNING
+    else:
+        log_level = logging.INFO
+
+    logging.basicConfig(
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        level=log_level,
+    )
+
     if args.dry_run:
         run_dry_run(args)
     else:

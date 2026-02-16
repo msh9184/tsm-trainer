@@ -14,6 +14,8 @@ Key features:
 - Benchmark checkpointing: resume interrupted evaluations from partial results
 - Dataset pre-validation: check all datasets exist before starting
 - Per-dataset timeout: skip slow-loading or hanging datasets
+- Config schema validation: catch configuration errors before evaluation
+- Per-dataset timing: track evaluation time for each dataset
 """
 
 from __future__ import annotations
@@ -434,6 +436,84 @@ def validate_datasets(
     return report
 
 
+def validate_config(config_path: str | Path) -> list[str]:
+    """Validate a benchmark YAML config for schema correctness.
+
+    Checks that all required fields are present and have valid types
+    before evaluation begins, providing clear error messages.
+
+    Parameters
+    ----------
+    config_path : str or Path
+        Path to benchmark YAML config.
+
+    Returns
+    -------
+    list[str]
+        List of validation errors. Empty list means valid config.
+    """
+    config_path = Path(config_path)
+    errors = []
+
+    if not config_path.exists():
+        return [f"Config file not found: {config_path}"]
+
+    try:
+        with open(config_path) as f:
+            configs = yaml.safe_load(f)
+    except yaml.YAMLError as e:
+        return [f"YAML parse error in {config_path}: {e}"]
+
+    if not isinstance(configs, list):
+        return [f"Config must be a YAML list of dataset entries, got {type(configs).__name__}"]
+
+    if len(configs) == 0:
+        return [f"Config file is empty: {config_path}"]
+
+    required_fields = {"name": str, "hf_repo": str, "offset": int, "prediction_length": int}
+    optional_fields = {"num_rolls": int, "split": str, "data_dir": str, "local_only": bool}
+
+    for idx, entry in enumerate(configs):
+        prefix = f"Entry {idx} ({entry.get('name', '???')})"
+
+        if not isinstance(entry, dict):
+            errors.append(f"{prefix}: Expected dict, got {type(entry).__name__}")
+            continue
+
+        # Check required fields
+        for field, expected_type in required_fields.items():
+            if field not in entry:
+                errors.append(f"{prefix}: Missing required field '{field}'")
+            elif not isinstance(entry[field], expected_type):
+                errors.append(
+                    f"{prefix}: Field '{field}' should be {expected_type.__name__}, "
+                    f"got {type(entry[field]).__name__} ({entry[field]!r})"
+                )
+
+        # Check optional fields types
+        for field, expected_type in optional_fields.items():
+            if field in entry and not isinstance(entry[field], expected_type):
+                errors.append(
+                    f"{prefix}: Field '{field}' should be {expected_type.__name__}, "
+                    f"got {type(entry[field]).__name__}"
+                )
+
+        # Semantic validation
+        if "prediction_length" in entry and isinstance(entry["prediction_length"], int):
+            if entry["prediction_length"] <= 0:
+                errors.append(f"{prefix}: prediction_length must be positive, got {entry['prediction_length']}")
+
+        if "offset" in entry and isinstance(entry["offset"], int):
+            if entry["offset"] >= 0:
+                errors.append(f"{prefix}: offset should be negative (test tail), got {entry['offset']}")
+
+        if "num_rolls" in entry and isinstance(entry["num_rolls"], int):
+            if entry["num_rolls"] <= 0:
+                errors.append(f"{prefix}: num_rolls must be positive, got {entry['num_rolls']}")
+
+    return errors
+
+
 class Evaluator:
     """Unified evaluation runner for time series forecasting.
 
@@ -486,13 +566,14 @@ class Evaluator:
         Returns
         -------
         dict
-            {dataset, model, WQL, MASE, ...}
+            {dataset, model, WQL, MASE, n_series, elapsed_s, ...}
         """
         from gluonts.ev.metrics import MASE, MeanWeightedSumQuantileLoss
         from gluonts.model.evaluation import evaluate_forecasts
 
         ds_name = config["name"]
         prediction_length = config["prediction_length"]
+        ds_start = time_module.time()
 
         logger.info(f"Loading dataset: {ds_name}")
         _, test_data, pred_len, _ = load_dataset_from_config(
@@ -500,8 +581,13 @@ class Evaluator:
         )
 
         n_series = len(test_data.input)
-        logger.info(f"Generating forecasts: {ds_name} ({n_series} series, H={pred_len})")
+        load_time = time_module.time() - ds_start
+        logger.info(
+            f"Generating forecasts: {ds_name} "
+            f"({n_series} series, H={pred_len}, load={load_time:.1f}s)"
+        )
 
+        forecast_start = time_module.time()
         forecasts = generate_quantile_forecasts(
             test_data.input,
             self.forecaster,
@@ -510,8 +596,10 @@ class Evaluator:
             batch_size=self.batch_size,
             **predict_kwargs,
         )
+        forecast_time = time_module.time() - forecast_start
 
-        logger.info(f"Computing metrics: {ds_name}")
+        logger.info(f"Computing metrics: {ds_name} (forecast={forecast_time:.1f}s)")
+        metric_start = time_module.time()
         metrics = (
             evaluate_forecasts(
                 forecasts,
@@ -525,11 +613,15 @@ class Evaluator:
             .reset_index(drop=True)
             .to_dict(orient="records")
         )
+        metric_time = time_module.time() - metric_start
 
+        total_elapsed = time_module.time() - ds_start
         result = {
             "dataset": ds_name,
             "model": self.forecaster.name,
             **metrics[0],
+            "n_series": n_series,
+            "elapsed_s": round(total_elapsed, 1),
         }
 
         # Rename to standard names
@@ -569,6 +661,15 @@ class Evaluator:
             Per-dataset results with columns: dataset, model, WQL, MASE.
         """
         config_path = Path(config_path)
+
+        # Validate config schema before starting evaluation
+        config_errors = validate_config(config_path)
+        if config_errors:
+            error_msg = "\n".join(f"  - {e}" for e in config_errors)
+            raise ValueError(
+                f"Benchmark config validation failed ({config_path.name}):\n{error_msg}"
+            )
+
         with open(config_path) as f:
             configs = yaml.safe_load(f)
 
