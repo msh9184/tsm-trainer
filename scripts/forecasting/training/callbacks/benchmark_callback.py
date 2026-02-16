@@ -11,6 +11,8 @@ Features:
 - Per-dataset TensorBoard logging under benchmark/tier{N}/
 - Top-K checkpoint management by configurable metric
 - Distributed training support (rank-0 only evaluation)
+- Evaluation timeout to prevent training hangs
+- Uses shared evaluation engine (no code duplication)
 
 Usage in training config YAML:
     benchmark_config: configs/lite-benchmark.yaml
@@ -27,13 +29,11 @@ Usage in training config YAML:
 from __future__ import annotations
 
 import logging
-import math
 import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import numpy as np
 import torch
 import torch.distributed as dist
 
@@ -41,6 +41,11 @@ if TYPE_CHECKING:
     from transformers import TrainerCallback, TrainerControl, TrainerState, TrainingArguments
 
 logger = logging.getLogger(__name__)
+
+# Ensure evaluation engine is importable
+_EVAL_DIR = Path(__file__).parent.parent / "evaluation"
+if str(_EVAL_DIR) not in sys.path:
+    sys.path.insert(0, str(_EVAL_DIR))
 
 
 def is_main_process() -> bool:
@@ -75,6 +80,8 @@ class EnhancedBenchmarkCallback:
         Batch size for evaluation.
     datasets_root : str, optional
         Root directory for local datasets (offline mode).
+    eval_timeout : float
+        Maximum seconds for a single tier evaluation. 0 = no timeout (default).
     """
 
     def __init__(
@@ -88,6 +95,7 @@ class EnhancedBenchmarkCallback:
         composite_weights: dict | None = None,
         eval_batch_size: int = 32,
         datasets_root: str | None = None,
+        eval_timeout: float = 0,
     ):
         self._tier1_config = tier1_config
         self._tier2_config = tier2_config
@@ -98,6 +106,7 @@ class EnhancedBenchmarkCallback:
         self._composite_weights = composite_weights or {"wql": 0.7, "mase": 0.3}
         self._eval_batch_size = eval_batch_size
         self._datasets_root = datasets_root
+        self._eval_timeout = eval_timeout
 
         # State
         self._last_tier1_step: int = 0
@@ -106,6 +115,9 @@ class EnhancedBenchmarkCallback:
         # (score, step, ckpt_path, full_results)
         self.last_benchmark_results: dict | None = None
         self._tb_writer = None
+
+        # Track evaluation engine availability
+        self._engine_available: bool | None = None
 
     def on_step_end(self, args, state, control, **kwargs):
         """Check if evaluation should be triggered."""
@@ -167,19 +179,31 @@ class EnhancedBenchmarkCallback:
             model.eval()
             device = next(model.parameters()).device
 
+            eval_start = time.time()
             try:
                 results = self._evaluate_benchmark(
                     model=model,
                     config_path=config_path,
                     device=device,
                 )
+
+                eval_elapsed = time.time() - eval_start
+
+                # Check timeout
+                if self._eval_timeout > 0 and eval_elapsed > self._eval_timeout:
+                    logger.warning(
+                        f"  Evaluation took {eval_elapsed:.0f}s "
+                        f"(timeout={self._eval_timeout:.0f}s)"
+                    )
+
                 results["step"] = step
                 results["tier"] = tier
+                results["elapsed_seconds"] = round(eval_elapsed, 1)
 
                 avg_wql = results.get("avg_wql")
                 avg_mase = results.get("avg_mase")
 
-                logger.info(f"  ── {tier_label} Results ──")
+                logger.info(f"  ── {tier_label} Results ({eval_elapsed:.1f}s) ──")
                 if avg_wql is not None:
                     logger.info(f"  Avg WQL:  {avg_wql:.4f}")
                 if avg_mase is not None:
@@ -207,7 +231,8 @@ class EnhancedBenchmarkCallback:
                     self._manage_checkpoints(composite, step, results, args)
 
             except Exception as e:
-                logger.error(f"  Benchmark evaluation failed: {e}")
+                eval_elapsed = time.time() - eval_start
+                logger.error(f"  Benchmark evaluation failed after {eval_elapsed:.1f}s: {e}")
                 import traceback
                 logger.error(traceback.format_exc())
             finally:
@@ -225,16 +250,21 @@ class EnhancedBenchmarkCallback:
         config_path: str,
         device: torch.device,
     ) -> dict:
-        """Run benchmark evaluation using the engine module.
+        """Run benchmark evaluation using the shared evaluation engine.
 
-        Falls back to the legacy inline evaluation if the engine module
-        is not available.
+        The evaluation engine (scripts/forecasting/evaluation/engine/) provides
+        all data loading, forecasting, and metric computation. This callback
+        wraps the training model in a TrainingModelForecaster and delegates
+        to the engine's Evaluator.
         """
+        if self._engine_available is False:
+            raise ImportError("Evaluation engine not available (checked previously)")
+
         try:
-            # Use the new evaluation engine
-            sys.path.insert(0, str(Path(__file__).parent.parent / "evaluation"))
             from engine.forecaster import TrainingModelForecaster
             from engine.evaluator import Evaluator
+
+            self._engine_available = True
 
             forecaster = TrainingModelForecaster(model, device)
             evaluator = Evaluator(
@@ -245,207 +275,13 @@ class EnhancedBenchmarkCallback:
 
             return evaluator.evaluate_quick(config_path)
 
-        except ImportError:
-            logger.warning("Engine module not available, falling back to legacy evaluation")
-            return self._evaluate_benchmark_legacy(model, config_path, device)
-
-    def _evaluate_benchmark_legacy(
-        self,
-        model,
-        config_path: str,
-        device: torch.device,
-    ) -> dict:
-        """Legacy evaluation (same as original _run_lite_benchmark).
-
-        Kept for backward compatibility when engine module is not in path.
-        Supports both local dataset loading and HuggingFace download.
-        """
-        import datasets as hf_datasets
-        import pandas as pd
-        import yaml
-        from gluonts.dataset.split import split as gluonts_split
-        from gluonts.ev.metrics import MASE, MeanWeightedSumQuantileLoss
-        from gluonts.itertools import batcher
-        from gluonts.model.evaluation import evaluate_forecasts
-        from gluonts.model.forecast import QuantileForecast
-
-        from chronos import Chronos2Pipeline
-
-        eval_quantiles = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
-
-        with open(config_path) as f:
-            configs = yaml.safe_load(f)
-
-        pipeline = Chronos2Pipeline.__new__(Chronos2Pipeline)
-        pipeline.model = model
-        pipeline.device = device
-        pipeline.chronos_config = model.chronos_config
-
-        results_per_dataset = {}
-        all_wql = []
-        all_mase = []
-
-        for bm_config in configs:
-            ds_name = bm_config["name"]
-            pred_len = bm_config["prediction_length"]
-            hf_repo = bm_config["hf_repo"]
-            offset = bm_config["offset"]
-            num_rolls = bm_config.get("num_rolls", 1)
-            split_name = bm_config.get("split", "train")
-
-            try:
-                entries = None
-                series_fields = None
-
-                # Try local dataset loading first
-                if self._datasets_root:
-                    local_path = Path(self._datasets_root) / ds_name
-                    if local_path.exists():
-                        logger.info(f"  Loading {ds_name} from local: {local_path}")
-                        try:
-                            ds = hf_datasets.load_from_disk(str(local_path))
-                            if isinstance(ds, hf_datasets.DatasetDict):
-                                ds = ds[split_name]
-                            ds.set_format("numpy")
-                            series_fields = [
-                                col for col in ds.features
-                                if isinstance(ds.features[col], hf_datasets.Sequence)
-                                and col != "timestamp"
-                            ]
-                            entries = ds
-                        except Exception:
-                            # Fallback to Arrow IPC
-                            entries, series_fields = self._load_arrow_fallback(local_path)
-
-                # Fallback to HuggingFace download
-                if entries is None:
-                    trust_remote_code = hf_repo == "autogluon/chronos_datasets_extra"
-                    ds = hf_datasets.load_dataset(
-                        hf_repo, ds_name, split=split_name,
-                        trust_remote_code=trust_remote_code,
-                    )
-                    ds.set_format("numpy")
-                    series_fields = [
-                        col for col in ds.features
-                        if isinstance(ds.features[col], hf_datasets.Sequence)
-                        and col != "timestamp"
-                    ]
-                    entries = ds
-
-                # Convert to GluonTS format
-                first_entry = entries[0]
-                dataset_freq = pd.DatetimeIndex(first_entry["timestamp"]).to_period()[0].freqstr
-
-                gts_dataset = []
-                for entry in entries:
-                    for field in series_fields:
-                        gts_dataset.append({
-                            "start": pd.Period(entry["timestamp"][0], freq=dataset_freq),
-                            "target": entry[field],
-                        })
-
-                _, test_template = gluonts_split(gts_dataset, offset=offset)
-                test_data = test_template.generate_instances(pred_len, windows=num_rolls)
-
-                # Generate forecasts — pipeline returns (N, H, Q), swap to (N, Q, H)
-                forecast_outputs = []
-                for batch in batcher(test_data.input, batch_size=self._eval_batch_size):
-                    context = [torch.tensor(e["target"]) for e in batch]
-                    with torch.no_grad():
-                        quantiles, _ = pipeline.predict_quantiles(
-                            context, prediction_length=pred_len,
-                            quantile_levels=eval_quantiles,
-                        )
-                    if isinstance(quantiles, list):
-                        quantiles = np.stack(quantiles).squeeze(axis=1)
-                    elif isinstance(quantiles, torch.Tensor):
-                        quantiles = quantiles.cpu().numpy()
-                    # Pipeline raw output is (N, H, Q) → swap to (N, Q, H)
-                    if quantiles.ndim == 3 and quantiles.shape[-1] == len(eval_quantiles):
-                        quantiles = quantiles.swapaxes(-1, -2)
-                    forecast_outputs.append(quantiles)
-                forecast_outputs = np.concatenate(forecast_outputs)
-
-                # Convert to QuantileForecast — each item is (Q, H)
-                forecasts = []
-                for item, ts in zip(forecast_outputs, test_data.input):
-                    start = ts["start"] + len(ts["target"])
-                    forecasts.append(QuantileForecast(
-                        forecast_arrays=item,
-                        forecast_keys=list(map(str, eval_quantiles)),
-                        start_date=start,
-                    ))
-
-                metrics = (
-                    evaluate_forecasts(
-                        forecasts, test_data=test_data,
-                        metrics=[MASE(), MeanWeightedSumQuantileLoss(eval_quantiles)],
-                        batch_size=5000,
-                    )
-                    .reset_index(drop=True)
-                    .to_dict(orient="records")
-                )
-                wql = metrics[0].get("mean_weighted_sum_quantile_loss", float("nan"))
-                mase = metrics[0].get("MASE[0.5]", float("nan"))
-
-                results_per_dataset[ds_name] = {"WQL": wql, "MASE": mase}
-                if not math.isnan(wql):
-                    all_wql.append(wql)
-                if not math.isnan(mase):
-                    all_mase.append(mase)
-
-            except Exception as e:
-                logger.warning(f"  Benchmark {ds_name} FAILED: {e}")
-                results_per_dataset[ds_name] = {"WQL": "error", "MASE": "error"}
-
-        return {
-            "avg_wql": float(np.mean(all_wql)) if all_wql else None,
-            "avg_mase": float(np.mean(all_mase)) if all_mase else None,
-            "per_dataset": results_per_dataset,
-        }
-
-    @staticmethod
-    def _load_arrow_fallback(data_path: Path) -> tuple[list[dict], list[str]]:
-        """Load dataset directly from Arrow/Parquet files (version-mismatch fallback)."""
-        import pyarrow as pa
-        from pyarrow import ipc
-
-        arrow_files = sorted(data_path.glob("*.arrow"))
-        parquet_files = sorted(data_path.glob("*.parquet"))
-
-        if not arrow_files and not parquet_files:
-            raise FileNotFoundError(f"No .arrow or .parquet files in {data_path}")
-
-        tables = []
-        if arrow_files:
-            for f in arrow_files:
-                try:
-                    reader = ipc.open_stream(str(f))
-                    tables.append(reader.read_all())
-                except Exception:
-                    tables.append(ipc.open_file(str(f)).read_all())
-        elif parquet_files:
-            import pyarrow.parquet as pq
-            for f in parquet_files:
-                tables.append(pq.read_table(str(f)))
-
-        table = pa.concat_tables(tables) if len(tables) > 1 else tables[0]
-
-        series_fields = [
-            field.name for field in table.schema
-            if field.name != "timestamp"
-            and isinstance(field.type, (pa.ListType, pa.LargeListType))
-        ]
-
-        data = table.to_pydict()
-        rows = []
-        for i in range(len(table)):
-            row = {"timestamp": np.array(data["timestamp"][i])}
-            for field in series_fields:
-                row[field] = np.asarray(data[field][i], dtype=np.float32)
-            rows.append(row)
-
-        return rows, series_fields
+        except ImportError as e:
+            self._engine_available = False
+            raise ImportError(
+                f"Evaluation engine not importable: {e}\n"
+                f"Ensure scripts/forecasting/evaluation/engine/ is accessible.\n"
+                f"Current sys.path includes: {_EVAL_DIR}"
+            ) from e
 
     def _compute_checkpoint_score(self, results: dict) -> float | None:
         """Compute the score used for checkpoint ranking.
@@ -518,6 +354,11 @@ class EnhancedBenchmarkCallback:
             composite = self._compute_checkpoint_score(results)
             if composite is not None:
                 self._tb_writer.add_scalar(f"benchmark/{tier}/composite_score", composite, step)
+
+            # Evaluation timing
+            elapsed = results.get("elapsed_seconds")
+            if elapsed is not None:
+                self._tb_writer.add_scalar(f"benchmark/{tier}/elapsed_seconds", elapsed, step)
 
             # Checkpoint tracking
             if self._best_results:
