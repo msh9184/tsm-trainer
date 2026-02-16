@@ -266,6 +266,42 @@ def run_benchmarks(args):
     model_load_time = time.time() - model_load_start
     logger.info(f"Model loaded in {model_load_time:.1f}s")
 
+    # Pre-validate datasets for all benchmarks
+    if args.datasets_root:
+        from engine.evaluator import validate_datasets
+        logger.info("Pre-validating datasets...")
+        all_valid = True
+        for benchmark_name in args.benchmarks:
+            config_map = {
+                "chronos_ii": "zero-shot.yaml",
+                "chronos_i": "in-domain.yaml",
+                "lite": "lite-benchmark.yaml",
+                "extended": "extended-benchmark.yaml",
+            }
+            config_file = config_map.get(benchmark_name)
+            if config_file:
+                config_path = SCRIPT_DIR / "configs" / config_file
+                if config_path.exists():
+                    report = validate_datasets(config_path, args.datasets_root)
+                    if report["missing"] > 0:
+                        all_valid = False
+                        missing_names = [
+                            name for name, info in report["datasets"].items()
+                            if info["status"] == "missing"
+                        ]
+                        logger.warning(
+                            f"  {benchmark_name}: {report['missing']}/{report['total']} "
+                            f"datasets MISSING: {missing_names}"
+                        )
+                    else:
+                        logger.info(
+                            f"  {benchmark_name}: {report['found']}/{report['total']} "
+                            f"datasets OK"
+                        )
+        if not all_valid:
+            logger.warning("Some datasets are missing. Evaluation will proceed but may fail.")
+        logger.info("")
+
     # Run each benchmark
     all_results = {}
     all_summaries = {}
@@ -281,9 +317,42 @@ def run_benchmarks(args):
             adapter = get_adapter(benchmark_name, args)
             bm_start = time.time()
 
-            # Evaluate
-            results = adapter.evaluate(forecaster)
-            summary = adapter.aggregate(results)
+            # Determine checkpoint path for resume support
+            checkpoint_path = None
+            if getattr(args, "resume", False):
+                checkpoint_path = experiment_dir / f".checkpoint_{benchmark_name}.json"
+
+            # Evaluate (with optional checkpointing)
+            if checkpoint_path is not None:
+                # Use Evaluator directly with checkpoint support
+                from engine.forecaster import Chronos2Forecaster, ChronosBoltForecaster
+                from engine.evaluator import Evaluator
+
+                evaluator = Evaluator(
+                    forecaster=forecaster,
+                    batch_size=args.batch_size,
+                    datasets_root=args.datasets_root,
+                )
+                config_map = {
+                    "chronos_ii": "zero-shot.yaml",
+                    "chronos_i": "in-domain.yaml",
+                    "lite": "lite-benchmark.yaml",
+                    "extended": "extended-benchmark.yaml",
+                }
+                config_file = config_map.get(benchmark_name)
+                if config_file:
+                    cfg_path = SCRIPT_DIR / "configs" / config_file
+                    results = evaluator.evaluate_benchmark(
+                        cfg_path,
+                        checkpoint_path=checkpoint_path,
+                    )
+                    summary = adapter.aggregate(results)
+                else:
+                    results = adapter.evaluate(forecaster)
+                    summary = adapter.aggregate(results)
+            else:
+                results = adapter.evaluate(forecaster)
+                summary = adapter.aggregate(results)
 
             bm_elapsed = time.time() - bm_start
             summary["elapsed_seconds"] = round(bm_elapsed, 1)
@@ -705,6 +774,12 @@ def parse_args():
     parser.add_argument(
         "--dry-run", action="store_true",
         help="Check data availability and model loading without running evaluation",
+    )
+
+    # Resume / checkpointing
+    parser.add_argument(
+        "--resume", action="store_true",
+        help="Resume from checkpoint if previous run was interrupted",
     )
 
     return parser.parse_args()

@@ -15,7 +15,7 @@ from .forecaster import (
     ChronosBoltForecaster,
     TrainingModelForecaster,
 )
-from .evaluator import Evaluator
+from .evaluator import Evaluator, validate_datasets
 from .aggregator import Aggregator
 
 __all__ = [
@@ -26,4 +26,5 @@ __all__ = [
     "TrainingModelForecaster",
     "Evaluator",
     "Aggregator",
+    "validate_datasets",
 ]

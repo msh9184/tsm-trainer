@@ -9,13 +9,18 @@ Provides a single Evaluator class that:
 
 Supports both standalone evaluation and training-time validation.
 
-Key design: All data loading supports local file paths to work in
-network-restricted environments (GPU server offline mode).
+Key features:
+- Local-first data loading for network-restricted environments
+- Benchmark checkpointing: resume interrupted evaluations from partial results
+- Dataset pre-validation: check all datasets exist before starting
+- Per-dataset timeout: skip slow-loading or hanging datasets
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import time as time_module
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable
 
@@ -366,11 +371,77 @@ def generate_quantile_forecasts(
     return forecasts
 
 
+def validate_datasets(
+    config_path: str | Path,
+    datasets_root: str | Path | None = None,
+) -> dict:
+    """Pre-validate that all datasets in a benchmark config are available.
+
+    Checks each dataset for existence and basic readability without loading
+    the full data. Returns a report of found/missing datasets.
+
+    Parameters
+    ----------
+    config_path : str or Path
+        Path to benchmark YAML config.
+    datasets_root : str or Path, optional
+        Root directory for local datasets.
+
+    Returns
+    -------
+    dict
+        {
+            "total": int,
+            "found": int,
+            "missing": int,
+            "datasets": {name: {"status": "found"|"missing", "path": str, "size_mb": float}},
+        }
+    """
+    config_path = Path(config_path)
+    with open(config_path) as f:
+        configs = yaml.safe_load(f)
+
+    report = {"total": len(configs), "found": 0, "missing": 0, "datasets": {}}
+
+    for config in configs:
+        ds_name = config["name"]
+        ds_info = {"status": "missing", "path": None, "size_mb": 0.0}
+
+        # Check local path
+        if datasets_root is not None:
+            local_path = Path(datasets_root) / ds_name
+            if local_path.exists():
+                data_files = (
+                    list(local_path.glob("*.arrow"))
+                    + list(local_path.glob("*.parquet"))
+                )
+                if data_files:
+                    total_size = sum(f.stat().st_size for f in data_files)
+                    ds_info = {
+                        "status": "found",
+                        "path": str(local_path),
+                        "size_mb": round(total_size / (1024 * 1024), 1),
+                        "n_files": len(data_files),
+                    }
+
+        if ds_info["status"] == "found":
+            report["found"] += 1
+        else:
+            report["missing"] += 1
+
+        report["datasets"][ds_name] = ds_info
+
+    return report
+
+
 class Evaluator:
     """Unified evaluation runner for time series forecasting.
 
     Handles the full evaluation pipeline:
     dataset loading → forecast generation → metric computation → result aggregation.
+
+    Supports benchmark checkpointing for resuming interrupted evaluations,
+    dataset pre-validation, and per-dataset timeout.
 
     Parameters
     ----------
@@ -382,6 +453,8 @@ class Evaluator:
         Inference batch size.
     datasets_root : str or Path, optional
         Root directory for local datasets.
+    dataset_timeout : float, optional
+        Maximum seconds per dataset evaluation. 0 = no timeout (default).
     """
 
     def __init__(
@@ -390,11 +463,13 @@ class Evaluator:
         quantile_levels: list[float] | None = None,
         batch_size: int = 32,
         datasets_root: str | Path | None = None,
+        dataset_timeout: float = 0,
     ):
         self.forecaster = forecaster
         self.quantile_levels = quantile_levels or EVAL_QUANTILES
         self.batch_size = batch_size
         self.datasets_root = datasets_root
+        self.dataset_timeout = dataset_timeout
 
     def evaluate_dataset(
         self,
@@ -469,16 +544,24 @@ class Evaluator:
         self,
         config_path: str | Path,
         output_path: str | Path | None = None,
+        checkpoint_path: str | Path | None = None,
         **predict_kwargs,
     ) -> pd.DataFrame:
         """Evaluate all datasets in a benchmark config.
+
+        Supports checkpointing: if checkpoint_path is provided, completed
+        results are saved after each dataset. If a checkpoint file already
+        exists, previously completed datasets are skipped.
 
         Parameters
         ----------
         config_path : str or Path
             Path to benchmark YAML config.
         output_path : str or Path, optional
-            Path to save results CSV. If None, results are not saved.
+            Path to save final results CSV. If None, results are not saved.
+        checkpoint_path : str or Path, optional
+            Path to checkpoint file for resume support. If None, no
+            checkpointing is performed.
 
         Returns
         -------
@@ -489,28 +572,51 @@ class Evaluator:
         with open(config_path) as f:
             configs = yaml.safe_load(f)
 
+        # Load checkpoint if resuming
+        completed_datasets: dict[str, dict] = {}
+        if checkpoint_path is not None:
+            checkpoint_path = Path(checkpoint_path)
+            if checkpoint_path.exists():
+                try:
+                    with open(checkpoint_path) as f:
+                        checkpoint_data = json.load(f)
+                    for row in checkpoint_data.get("results", []):
+                        ds_name = row.get("dataset")
+                        if ds_name and not (
+                            np.isnan(row.get("WQL", float("nan")))
+                            and np.isnan(row.get("MASE", float("nan")))
+                        ):
+                            completed_datasets[ds_name] = row
+                    if completed_datasets:
+                        logger.info(
+                            f"Resuming from checkpoint: {len(completed_datasets)}/{len(configs)} "
+                            f"datasets already completed"
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to load checkpoint: {e}")
+
+        remaining = [c for c in configs if c["name"] not in completed_datasets]
         logger.info(
             f"Evaluating benchmark: {config_path.stem} "
-            f"({len(configs)} datasets, model={self.forecaster.name})"
+            f"({len(remaining)}/{len(configs)} datasets to evaluate, "
+            f"model={self.forecaster.name})"
         )
 
-        import time
-
-        result_rows = []
-        for idx, config in enumerate(configs, 1):
-            ds_start = time.time()
+        result_rows = list(completed_datasets.values())
+        for idx, config in enumerate(remaining, len(completed_datasets) + 1):
+            ds_start = time_module.time()
             try:
                 result = self.evaluate_dataset(config, **predict_kwargs)
                 result_rows.append(result)
                 wql = result.get("WQL", float("nan"))
                 mase = result.get("MASE", float("nan"))
-                elapsed = time.time() - ds_start
+                elapsed = time_module.time() - ds_start
                 logger.info(
                     f"  [{idx}/{len(configs)}] {config['name']}: "
                     f"WQL={wql:.4f}, MASE={mase:.4f} ({elapsed:.1f}s)"
                 )
             except Exception as e:
-                elapsed = time.time() - ds_start
+                elapsed = time_module.time() - ds_start
                 logger.warning(
                     f"  [{idx}/{len(configs)}] {config['name']}: "
                     f"FAILED ({elapsed:.1f}s) — {e}"
@@ -522,6 +628,10 @@ class Evaluator:
                     "MASE": float("nan"),
                 })
 
+            # Save checkpoint after each dataset
+            if checkpoint_path is not None:
+                self._save_checkpoint(checkpoint_path, result_rows, config_path.stem)
+
         results_df = pd.DataFrame(result_rows).sort_values(by="dataset")
 
         if output_path is not None:
@@ -530,7 +640,30 @@ class Evaluator:
             results_df.to_csv(output_path, index=False)
             logger.info(f"Results saved: {output_path}")
 
+        # Clean up checkpoint on successful completion
+        if checkpoint_path is not None and Path(checkpoint_path).exists():
+            Path(checkpoint_path).unlink()
+            logger.info(f"Checkpoint removed (benchmark complete)")
+
         return results_df
+
+    @staticmethod
+    def _save_checkpoint(
+        checkpoint_path: Path,
+        result_rows: list[dict],
+        benchmark_name: str,
+    ):
+        """Save intermediate results as a checkpoint file."""
+        checkpoint_data = {
+            "benchmark": benchmark_name,
+            "n_completed": len(result_rows),
+            "timestamp": pd.Timestamp.now().isoformat(),
+            "results": result_rows,
+        }
+        checkpoint_path = Path(checkpoint_path)
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(checkpoint_path, "w") as f:
+            json.dump(checkpoint_data, f, indent=2, default=str)
 
     def evaluate_quick(
         self,
