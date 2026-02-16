@@ -71,6 +71,11 @@ probability:
 #   - "/group-volume/ts-dataset/chronos_datasets/your_validation_data"
 # max_val_series: 10000
 
+benchmark_config: "scripts/forecasting/training/configs/lite-benchmark-local.yaml"
+benchmark_eval_steps: 10000
+benchmark_top_k_checkpoints: 3
+benchmark_batch_size: 32
+
 # ===========================================================================
 # Fine-tuning Hyperparameters (64 GPU)
 # ===========================================================================

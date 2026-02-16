@@ -1005,6 +1005,17 @@ def _run_lite_benchmark(
     Uses the same evaluation logic as scripts/evaluation/evaluate.py
     but runs on rank-0 only during training.
 
+    Supports both local datasets and HuggingFace Hub datasets via _open_hf_dataset.
+
+    Benchmark config YAML format:
+        - name: "dataset_name"
+          prediction_length: 24
+          hf_repo: "path/to/local/dataset"  # Local path OR HuggingFace repo ID
+          offset: 700
+          num_rolls: 50
+          # Optional: specify split if not "train"
+          split: "train"  # default: "train"
+
     Returns dict with:
         avg_wql, avg_mase, per_dataset: {name: {WQL, MASE}}
     """
@@ -1040,11 +1051,20 @@ def _run_lite_benchmark(
         hf_repo = bm_config["hf_repo"]
         offset = bm_config["offset"]
         num_rolls = bm_config["num_rolls"]
+        split = bm_config.get("split", "train")  # Optional: default to "train"
 
         try:
-            trust_remote = hf_repo == "autogluon/chronos_datasets_extra"
-            ds = hf_datasets.load_dataset(hf_repo, ds_name, split="train",
-                                           trust_remote_code=trust_remote)
+            # Use _open_hf_dataset to support both local paths and HuggingFace Hub
+            ds, fmt = _open_hf_dataset(hf_repo, split)
+
+            if fmt != "hf":
+                logger.warning(
+                    f"  Benchmark {ds_name}: Only HuggingFace format datasets are supported. "
+                    f"Got format '{fmt}'. Skipping."
+                )
+                results_per_dataset[ds_name] = {"WQL": "error", "MASE": "error"}
+                continue
+
             ds.set_format("numpy")
 
             # Convert to GluonTS univariate format
