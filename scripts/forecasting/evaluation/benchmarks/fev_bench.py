@@ -33,7 +33,7 @@ import pandas as pd
 from .base import BenchmarkAdapter
 
 if TYPE_CHECKING:
-    from ..engine.forecaster import BaseForecaster
+    from engine.forecaster import BaseForecaster
 
 logger = logging.getLogger(__name__)
 
@@ -232,7 +232,7 @@ class FevBenchAdapter(BenchmarkAdapter):
                 per_subset: {univariate: {...}, covariate: {...}}
             }
         """
-        from ..engine.aggregator import Aggregator
+        from engine.aggregator import Aggregator
 
         summary = {
             "n_tasks": len(results),

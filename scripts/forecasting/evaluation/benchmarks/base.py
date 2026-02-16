@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 if TYPE_CHECKING:
-    from ..engine.forecaster import BaseForecaster
+    from engine.forecaster import BaseForecaster
 
 logger = logging.getLogger(__name__)
 

@@ -35,7 +35,7 @@ import pandas as pd
 from .base import BenchmarkAdapter
 
 if TYPE_CHECKING:
-    from ..engine.forecaster import BaseForecaster
+    from engine.forecaster import BaseForecaster
 
 logger = logging.getLogger(__name__)
 

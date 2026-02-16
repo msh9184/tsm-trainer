@@ -27,7 +27,7 @@ import yaml
 from .base import BenchmarkAdapter
 
 if TYPE_CHECKING:
-    from ..engine.forecaster import BaseForecaster
+    from engine.forecaster import BaseForecaster
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +100,7 @@ class ChronosBenchmarkAdapter(BenchmarkAdapter):
         pd.DataFrame
             Per-dataset results with columns: dataset, model, WQL, MASE.
         """
-        from ..engine.evaluator import Evaluator
+        from engine.evaluator import Evaluator
 
         evaluator = Evaluator(
             forecaster=forecaster,
@@ -137,7 +137,7 @@ class ChronosBenchmarkAdapter(BenchmarkAdapter):
                 benchmark_type: str,
             }
         """
-        from ..engine.aggregator import Aggregator
+        from engine.aggregator import Aggregator
 
         summary = {
             "benchmark_type": self._benchmark_type,
@@ -187,7 +187,7 @@ class ChronosLiteBenchmarkAdapter(BenchmarkAdapter):
             return yaml.safe_load(f)
 
     def evaluate(self, forecaster: BaseForecaster, **kwargs) -> pd.DataFrame:
-        from ..engine.evaluator import Evaluator
+        from engine.evaluator import Evaluator
 
         evaluator = Evaluator(
             forecaster=forecaster,

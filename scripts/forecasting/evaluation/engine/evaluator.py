@@ -74,16 +74,27 @@ def load_dataset_from_config(
             data_path = str(candidate)
 
     # Load dataset
+    local_only = config.get("local_only", datasets_root is not None)
+
     if data_path and Path(data_path).exists():
         # Load from local path
-        logger.debug(f"Loading {ds_name} from local path: {data_path}")
+        logger.info(f"  Loading {ds_name} from local: {data_path}")
         ds = hf_datasets.load_from_disk(data_path)
         if isinstance(ds, hf_datasets.DatasetDict):
             ds = ds[split_name]
+    elif local_only:
+        # Local-only mode: error if dataset not found
+        searched = data_path or (Path(datasets_root) / ds_name if datasets_root else "N/A")
+        raise FileNotFoundError(
+            f"Dataset '{ds_name}' not found at local path: {searched}\n"
+            f"  datasets_root: {datasets_root}\n"
+            f"  Expected: {datasets_root}/{ds_name}/\n"
+            f"  Hint: Run download_eval_datasets.py first, or check the dataset name."
+        )
     else:
-        # Load from HuggingFace (uses cache)
+        # Load from HuggingFace (uses cache) — only when local_only is False
         trust_remote_code = hf_repo == "autogluon/chronos_datasets_extra"
-        logger.debug(f"Loading {ds_name} from HF: {hf_repo}")
+        logger.info(f"  Loading {ds_name} from HuggingFace: {hf_repo}")
         ds = hf_datasets.load_dataset(
             hf_repo, ds_name, split=split_name,
             trust_remote_code=trust_remote_code,
