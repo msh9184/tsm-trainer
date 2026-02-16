@@ -166,3 +166,10 @@ chronos-2-finetuned
 
 # Kiro IDE
 .kiro
+
+# Project-specific
+docs/
+*.tmp
+*.pdf
+scratch/
+question.txt
