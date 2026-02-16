@@ -33,21 +33,51 @@ logger = logging.getLogger(__name__)
 EVAL_QUANTILES = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 
 
+def _read_arrow_table(file_path: str | Path):
+    """Read a single Arrow file, handling both IPC stream and file formats.
+
+    datasets.save_to_disk() uses Arrow IPC *streaming* format (.arrow files),
+    NOT the random-access file format. We try streaming first, then file format.
+    """
+    import pyarrow as pa
+    from pyarrow import ipc
+
+    f = str(file_path)
+
+    # 1) Arrow IPC streaming format (datasets library default)
+    try:
+        reader = ipc.open_stream(f)
+        return reader.read_all()
+    except Exception:
+        pass
+
+    # 2) Arrow IPC file/random-access format
+    try:
+        return ipc.open_file(f).read_all()
+    except Exception:
+        pass
+
+    raise ValueError(f"Cannot read as Arrow stream or file: {file_path}")
+
+
 def _load_dataset_arrow_fallback(
     data_path: str | Path,
 ) -> tuple[list[dict], list[str]]:
-    """Load dataset directly from Arrow IPC files (version-mismatch fallback).
+    """Load dataset directly from Arrow/Parquet files (version-mismatch fallback).
 
     When datasets.load_from_disk() fails due to library version incompatibility
     (e.g., saved with datasets>=4.0 but loading with datasets<3.0), this reads
-    the raw Arrow files directly via PyArrow — bypassing metadata validation.
+    the raw data files directly via PyArrow — bypassing metadata validation.
 
-    The Arrow IPC format is version-agnostic and stable across PyArrow versions.
+    Supports:
+    - Arrow IPC streaming format (.arrow) — datasets library default
+    - Arrow IPC file format (.arrow) — older datasets versions
+    - Parquet format (.parquet) — newer datasets versions (3.x+)
 
     Parameters
     ----------
     data_path : str or Path
-        Directory containing .arrow files from datasets.save_to_disk().
+        Directory containing data files from datasets.save_to_disk().
 
     Returns
     -------
@@ -56,30 +86,38 @@ def _load_dataset_arrow_fallback(
         series_fields: column names containing time series data (List type)
     """
     import pyarrow as pa
-    from pyarrow import ipc
 
     data_path = Path(data_path)
     arrow_files = sorted(data_path.glob("*.arrow"))
+    parquet_files = sorted(data_path.glob("*.parquet"))
 
-    if not arrow_files:
+    if not arrow_files and not parquet_files:
         raise FileNotFoundError(
-            f"No .arrow files found in {data_path}.\n"
+            f"No .arrow or .parquet files found in {data_path}.\n"
             f"  Contents: {[p.name for p in data_path.iterdir()]}"
         )
 
-    # Read and concatenate Arrow IPC files
+    # Read data files into PyArrow Table
     tables = []
-    for f in arrow_files:
-        tables.append(ipc.open_file(str(f)).read_all())
+    if arrow_files:
+        for f in arrow_files:
+            tables.append(_read_arrow_table(f))
+    elif parquet_files:
+        import pyarrow.parquet as pq
+        for f in parquet_files:
+            tables.append(pq.read_table(str(f)))
 
     table = pa.concat_tables(tables) if len(tables) > 1 else tables[0]
+
+    logger.info(f"  Arrow fallback: read {len(table)} rows from {len(tables)} file(s)")
+    logger.info(f"  Schema: {table.schema}")
 
     # Identify series fields: List-type columns excluding 'timestamp'
     series_fields = []
     for field in table.schema:
         if field.name == "timestamp":
             continue
-        if isinstance(field.type, pa.ListType):
+        if isinstance(field.type, (pa.ListType, pa.LargeListType)):
             series_fields.append(field.name)
 
     if not series_fields:
@@ -99,7 +137,7 @@ def _load_dataset_arrow_fallback(
             row[field] = np.asarray(data[field][i], dtype=np.float32)
         rows.append(row)
 
-    logger.info(f"  Arrow fallback: {n_rows} rows, fields={series_fields}")
+    logger.info(f"  Arrow fallback OK: {n_rows} rows, fields={series_fields}")
     return rows, series_fields
 
 
