@@ -69,7 +69,12 @@ logger = logging.getLogger("BenchmarkRunner")
 
 # Resolve paths for imports
 SCRIPT_DIR = Path(__file__).parent
+PROJECT_ROOT = SCRIPT_DIR.parent.parent.parent.parent  # tsm-trainer/
+SRC_DIR = PROJECT_ROOT / "src"
+
 sys.path.insert(0, str(SCRIPT_DIR))
+if SRC_DIR.exists():
+    sys.path.insert(0, str(SRC_DIR))
 
 
 def get_adapter(benchmark_name: str, args):
@@ -125,25 +130,39 @@ def get_adapter(benchmark_name: str, args):
         )
 
 
+def resolve_device(requested: str) -> str:
+    """Resolve device, falling back to CPU if CUDA unavailable."""
+    import torch
+
+    if requested.startswith("cuda") and not torch.cuda.is_available():
+        logger.warning(
+            f"Requested device '{requested}' but CUDA is not available. "
+            f"Falling back to CPU."
+        )
+        return "cpu"
+    return requested
+
+
 def load_forecaster(args):
     """Load a forecaster from model path."""
     from engine.forecaster import Chronos2Forecaster, ChronosBoltForecaster
 
     model_path = args.model_path
+    device = resolve_device(args.device)
 
     # Auto-detect model type
     if "bolt" in model_path.lower():
-        logger.info(f"Loading Chronos-Bolt model: {model_path}")
+        logger.info(f"Loading Chronos-Bolt model: {model_path} (device={device})")
         return ChronosBoltForecaster(
             model_path=model_path,
-            device=args.device,
+            device=device,
             torch_dtype=args.torch_dtype,
         )
     else:
-        logger.info(f"Loading Chronos-2 model: {model_path}")
+        logger.info(f"Loading Chronos-2 model: {model_path} (device={device})")
         return Chronos2Forecaster(
             model_path=model_path,
-            device=args.device,
+            device=device,
             torch_dtype=args.torch_dtype,
         )
 
