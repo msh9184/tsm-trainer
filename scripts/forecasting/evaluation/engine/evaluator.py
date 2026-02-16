@@ -33,6 +33,76 @@ logger = logging.getLogger(__name__)
 EVAL_QUANTILES = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 
 
+def _load_dataset_arrow_fallback(
+    data_path: str | Path,
+) -> tuple[list[dict], list[str]]:
+    """Load dataset directly from Arrow IPC files (version-mismatch fallback).
+
+    When datasets.load_from_disk() fails due to library version incompatibility
+    (e.g., saved with datasets>=4.0 but loading with datasets<3.0), this reads
+    the raw Arrow files directly via PyArrow — bypassing metadata validation.
+
+    The Arrow IPC format is version-agnostic and stable across PyArrow versions.
+
+    Parameters
+    ----------
+    data_path : str or Path
+        Directory containing .arrow files from datasets.save_to_disk().
+
+    Returns
+    -------
+    tuple : (rows, series_fields)
+        rows: list of dicts mapping column names to numpy arrays
+        series_fields: column names containing time series data (List type)
+    """
+    import pyarrow as pa
+    from pyarrow import ipc
+
+    data_path = Path(data_path)
+    arrow_files = sorted(data_path.glob("*.arrow"))
+
+    if not arrow_files:
+        raise FileNotFoundError(
+            f"No .arrow files found in {data_path}.\n"
+            f"  Contents: {[p.name for p in data_path.iterdir()]}"
+        )
+
+    # Read and concatenate Arrow IPC files
+    tables = []
+    for f in arrow_files:
+        tables.append(ipc.open_file(str(f)).read_all())
+
+    table = pa.concat_tables(tables) if len(tables) > 1 else tables[0]
+
+    # Identify series fields: List-type columns excluding 'timestamp'
+    series_fields = []
+    for field in table.schema:
+        if field.name == "timestamp":
+            continue
+        if isinstance(field.type, pa.ListType):
+            series_fields.append(field.name)
+
+    if not series_fields:
+        raise ValueError(
+            f"No series columns (List type) found in {data_path}.\n"
+            f"  Schema: {table.schema}"
+        )
+
+    # Convert to row-oriented dicts with numpy arrays
+    data = table.to_pydict()
+    n_rows = len(table)
+
+    rows = []
+    for i in range(n_rows):
+        row = {"timestamp": np.array(data["timestamp"][i])}
+        for field in series_fields:
+            row[field] = np.asarray(data[field][i], dtype=np.float32)
+        rows.append(row)
+
+    logger.info(f"  Arrow fallback: {n_rows} rows, fields={series_fields}")
+    return rows, series_fields
+
+
 def load_dataset_from_config(
     config: dict,
     datasets_root: str | Path | None = None,
@@ -56,7 +126,6 @@ def load_dataset_from_config(
     -------
     tuple : (gts_dataset, test_data, prediction_length, dataset_freq)
     """
-    import datasets as hf_datasets
     from gluonts.dataset.split import split as gluonts_split
 
     ds_name = config["name"]
@@ -76,14 +145,35 @@ def load_dataset_from_config(
     # Load dataset
     local_only = config.get("local_only", datasets_root is not None)
 
+    entries = None       # Iterable of row dicts (Dataset or list[dict])
+    series_fields = None
+
     if data_path and Path(data_path).exists():
-        # Load from local path
         logger.info(f"  Loading {ds_name} from local: {data_path}")
-        ds = hf_datasets.load_from_disk(data_path)
-        if isinstance(ds, hf_datasets.DatasetDict):
-            ds = ds[split_name]
+
+        # Try datasets.load_from_disk() first
+        try:
+            import datasets as hf_datasets
+            ds = hf_datasets.load_from_disk(data_path)
+            if isinstance(ds, hf_datasets.DatasetDict):
+                ds = ds[split_name]
+            ds.set_format("numpy")
+            series_fields = [
+                col for col in ds.features
+                if isinstance(ds.features[col], hf_datasets.Sequence)
+                and col != "timestamp"
+            ]
+            entries = ds
+        except Exception as e:
+            # Fallback: read Arrow IPC files directly (version-mismatch safe)
+            logger.warning(
+                f"  load_from_disk failed: {e}\n"
+                f"  Falling back to direct Arrow file loading..."
+            )
+            rows, series_fields = _load_dataset_arrow_fallback(data_path)
+            entries = rows
+
     elif local_only:
-        # Local-only mode: error if dataset not found
         searched = data_path or (Path(datasets_root) / ds_name if datasets_root else "N/A")
         raise FileNotFoundError(
             f"Dataset '{ds_name}' not found at local path: {searched}\n"
@@ -93,24 +183,27 @@ def load_dataset_from_config(
         )
     else:
         # Load from HuggingFace (uses cache) — only when local_only is False
+        import datasets as hf_datasets
         trust_remote_code = hf_repo == "autogluon/chronos_datasets_extra"
         logger.info(f"  Loading {ds_name} from HuggingFace: {hf_repo}")
         ds = hf_datasets.load_dataset(
             hf_repo, ds_name, split=split_name,
             trust_remote_code=trust_remote_code,
         )
-
-    ds.set_format("numpy")
+        ds.set_format("numpy")
+        series_fields = [
+            col for col in ds.features
+            if isinstance(ds.features[col], hf_datasets.Sequence)
+            and col != "timestamp"
+        ]
+        entries = ds
 
     # Convert to GluonTS univariate format
-    series_fields = [
-        col for col in ds.features
-        if isinstance(ds.features[col], hf_datasets.Sequence) and col != "timestamp"
-    ]
-    dataset_freq = pd.DatetimeIndex(ds[0]["timestamp"]).to_period()[0].freqstr
+    first_entry = entries[0]
+    dataset_freq = pd.DatetimeIndex(first_entry["timestamp"]).to_period()[0].freqstr
 
     gts_dataset = []
-    for entry in ds:
+    for entry in entries:
         for field in series_fields:
             gts_dataset.append({
                 "start": pd.Period(entry["timestamp"][0], freq=dataset_freq),

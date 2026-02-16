@@ -99,7 +99,7 @@ def collect_environment_info() -> dict:
         info["torch_version"] = "not installed"
 
     # Key library versions
-    for lib in ["transformers", "datasets", "gluonts", "numpy", "pandas", "scipy"]:
+    for lib in ["transformers", "datasets", "gluonts", "numpy", "pandas", "scipy", "pyarrow"]:
         try:
             mod = __import__(lib)
             info[f"{lib}_version"] = getattr(mod, "__version__", "unknown")
