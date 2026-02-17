@@ -4,7 +4,7 @@
 # fev-bench: Comprehensive time series forecasting evaluation benchmark.
 # 100 tasks across 96 unique datasets, including 46 tasks with covariates.
 #
-# Paper: arXiv:2503.05495
+# Paper: arXiv:2509.26468
 # Package: https://pypi.org/project/fev/
 #
 # Protocol:

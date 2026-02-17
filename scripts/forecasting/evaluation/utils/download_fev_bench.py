@@ -39,7 +39,7 @@ Data sources:
 References:
     - PyPI: https://pypi.org/project/fev/
     - GitHub: https://github.com/autogluon/fev
-    - Paper: arXiv:2503.05495
+    - Paper: arXiv:2509.26468
 """
 
 import argparse
@@ -101,19 +101,25 @@ def precache_fev_tasks(output_dir: Path) -> bool:
         return False
 
     logger.info("  Pre-caching fev benchmark tasks...")
-    benchmark = fev.Benchmark.from_default()
+    tasks_yaml_url = (
+        "https://github.com/autogluon/fev/raw/refs/heads/main/"
+        "benchmarks/fev_bench/tasks.yaml"
+    )
+    benchmark = fev.Benchmark.from_yaml(tasks_yaml_url)
 
     cached = 0
     failed = 0
     for task in benchmark.tasks:
         try:
-            # Accessing test_data triggers the download
-            _ = task.test_data
+            # Iterating windows triggers the dataset download
+            for window in task.iter_windows(trust_remote_code=True):
+                _ = window.get_input_data()
+                break  # Only need to trigger download, not iterate all windows
             cached += 1
-            logger.info(f"    Cached: {task.name} ({task.dataset_name})")
+            logger.info(f"    Cached: {task.dataset_config}")
         except Exception as e:
             failed += 1
-            logger.warning(f"    Failed: {task.name} — {e}")
+            logger.warning(f"    Failed: {task.dataset_config} — {e}")
 
     logger.info(f"  Pre-cached: {cached} | Failed: {failed}")
     return failed == 0
