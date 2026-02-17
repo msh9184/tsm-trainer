@@ -211,15 +211,22 @@ KernelSynth composes 1–5 random kernels (periodic, RBF, trend, noise) via `+`/
 ### Download Datasets for Offline Use
 
 ```bash
-# Lite benchmark (5 datasets)
-python evaluation/utils/download_eval_datasets.py \
-    --config evaluation/configs/chronos-lite.yaml \
-    --output-dir /group-volume/ts-dataset/benchmarks/chronos/
-
-# All Chronos datasets (42 datasets)
+# Chronos benchmarks (Arrow format, HuggingFace)
 python evaluation/utils/download_eval_datasets.py \
     --config evaluation/configs/chronos-full.yaml \
     --output-dir /group-volume/ts-dataset/benchmarks/chronos/
+
+# GIFT-Eval (Salesforce/GiftEval from HuggingFace)
+python evaluation/utils/download_gift_eval.py \
+    --output-dir /group-volume/ts-dataset/benchmarks/gift_eval/
+
+# fev-bench (autogluon/fev_datasets from HuggingFace)
+python evaluation/utils/download_fev_bench.py \
+    --output-dir /group-volume/ts-dataset/benchmarks/fev_bench/
+
+# LTSF (9 CSV files — ETT, Weather, Traffic, etc.)
+python evaluation/utils/download_ltsf.py \
+    --output-dir /group-volume/ts-dataset/benchmarks/ltsf/
 
 # With proxy (for restricted networks)
 HTTPS_PROXY=http://proxy:8080 python evaluation/utils/download_eval_datasets.py \
@@ -241,15 +248,31 @@ python evaluation/run_benchmark.py \
     --device cuda --batch-size 32
 ```
 
-### Benchmark Configs
+### Benchmark Suites
 
-| Config | Datasets | Purpose |
-|--------|----------|---------|
-| `chronos-lite.yaml` | 5 | Quick validation during training (~3 min) |
-| `chronos-extended.yaml` | 15 | Thorough validation (~15 min) |
-| `chronos-i.yaml` | 15 | Chronos Bench I, in-domain (paper) |
-| `chronos-ii.yaml` | 27 | Chronos Bench II, zero-shot (paper) |
-| `chronos-full.yaml` | 42 | All Chronos datasets (I + II combined) |
+| Suite | CLI Name | Tasks | Metrics | Est. Time (A100) |
+|-------|----------|-------|---------|-------------------|
+| Chronos Lite | `chronos_lite` | 5 | WQL, MASE | ~3 min |
+| Chronos Extended | `chronos_extended` | 15 | WQL, MASE | ~15 min |
+| Chronos Bench I | `chronos_i` | 15 | WQL, MASE | ~30 min |
+| Chronos Bench II | `chronos_ii` | 27 | WQL, MASE | ~60 min |
+| Chronos Full | `chronos_full` | 42 | WQL, MASE | ~90 min |
+| GIFT-Eval | `gift_eval` | ~98 | CRPS, MASE, WQL, sMAPE, +7 | ~2 hr |
+| fev-bench | `fev_bench` | 100 | SQL, Win Rate, Skill Score | ~3 hr |
+| LTSF | `ltsf` | 36 | MSE, MAE | ~30 min |
+
+### Metrics
+
+| Metric | Type | Used By | Description |
+|--------|------|---------|-------------|
+| **WQL** | Probabilistic | Chronos, GIFT-Eval | Weighted Quantile Loss across 9 levels (0.1–0.9) |
+| **MASE** | Point | Chronos, GIFT-Eval | Mean Absolute Scaled Error vs seasonal naive |
+| **SQL** | Probabilistic | fev-bench | Scaled Quantile Loss (MASE extension for quantiles) |
+| **CRPS** | Probabilistic | GIFT-Eval | Continuous Ranked Probability Score |
+| **MSE** | Point | LTSF | Mean Squared Error on z-normalized values |
+| **MAE** | Point | LTSF | Mean Absolute Error on z-normalized values |
+| **Win Rate** | Aggregate | fev-bench | Fraction of tasks beating baseline (ties=0.5) |
+| **Skill Score** | Aggregate | fev-bench | 1 - gmean(clipped relative errors) |
 
 ### Lite Benchmark Datasets
 
@@ -260,11 +283,6 @@ python evaluation/run_benchmark.py \
 | Monash Weather | Weather | 30 |
 | NN5 | Finance | 56 |
 | Exchange Rate | Finance | 30 |
-
-### Metrics
-
-- **WQL** (Weighted Quantile Loss): Evaluates probabilistic forecasts across quantiles [0.1, 0.2, ..., 0.9]. Lower is better.
-- **MASE** (Mean Absolute Scaled Error): Scale-free accuracy metric using the naive seasonal baseline. Lower is better.
 
 ### Training-Time Evaluation
 

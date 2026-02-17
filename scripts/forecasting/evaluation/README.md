@@ -61,10 +61,11 @@ python run_benchmark.py \
 
 ### External Benchmarks (Library-Based)
 
-| Benchmark | Config | Tasks | Description | Est. Time (A100) |
-|-----------|--------|-------|-------------|-------------------|
-| `gift_eval` | `gift-eval.yaml` | ~98 | GIFT-Eval (23 datasets, multi-config) | ~2 hr |
-| `fev_bench` | `fev-bench.yaml` | 100 | fev-bench (task-level with bootstrap CI) | ~3 hr |
+| Benchmark | Config | Tasks | Primary Metrics | Description | Est. Time (A100) |
+|-----------|--------|-------|-----------------|-------------|-------------------|
+| `gift_eval` | `gift-eval.yaml` | ~98 | CRPS, MASE, WQL | GIFT-Eval: 23 datasets × 3 terms | ~2 hr |
+| `fev_bench` | `fev-bench.yaml` | 100 | SQL, Win Rate | fev-bench: 96 datasets, 46 with covariates | ~3 hr |
+| `ltsf` | `ltsf.yaml` | 36 | MSE, MAE | LTSF: 9 datasets × 4 horizons | ~30 min |
 
 ### Backward-Compatible Aliases
 
@@ -110,19 +111,138 @@ The official zero-shot benchmark from the Chronos-2 paper:
 Combined: Chronos I (15) + Chronos II (27) = **42 unique datasets**.
 Use for final model evaluation before release.
 
-#### `gift_eval` — GIFT-Eval
+#### `gift_eval` — GIFT-Eval (Salesforce AI Research)
 
-Comprehensive benchmark from Salesforce AI Research:
-- 23 base datasets, ~98 task configurations (short/medium/long horizons).
-- Requires: `pip install gift-eval`
-- Local data: `/group-volume/ts-dataset/benchmarks/gift_eval/`
+> **Paper**: [arXiv:2410.10393](https://arxiv.org/abs/2410.10393)
+> **Leaderboard**: [huggingface.co/spaces/Salesforce/GiftEval](https://huggingface.co/spaces/Salesforce/GiftEval)
+> **Requires**: `pip install gift-eval`
 
-#### `fev_bench` — fev-bench
+Comprehensive multi-domain benchmark with 23 base datasets evaluated across 3 forecast terms (short/medium/long), producing ~98 task configurations.
 
-Comprehensive forecasting evaluation benchmark:
-- 100 tasks across 96 unique datasets, including 46 with covariates.
-- Requires: `pip install fev`
-- Local data: `/group-volume/ts-dataset/benchmarks/fev_bench/`
+| Property | Value |
+|----------|-------|
+| Datasets | 23 base, ~98 configs |
+| Domains | 7 (Energy, Transport, Nature, Health, Sales, Web, Banking) |
+| Terms | Short, Medium, Long |
+| Quantiles | {0.1, 0.2, ..., 0.9} |
+| Evaluation | Non-overlapping rolling windows (max 20) |
+| Metrics | 11: CRPS, MSE, MAE, MASE, MAPE, sMAPE, MSIS, RMSE, NRMSE, ND, WQL |
+| Aggregation | Average rank / normalized scores |
+| Multivariate | Some tasks (channel-independent evaluation) |
+
+**Representative baselines for comparison**:
+| Model | Type | Reference |
+|-------|------|-----------|
+| Chronos-2 (120M) | Foundation model | Amazon (2025) |
+| TimesFM (200M) | Foundation model | Google (2024) |
+| Moirai (311M) | Foundation model | Salesforce (2024) |
+| Naive / SeasonalNaive | Statistical baseline | — |
+
+```bash
+# Download data
+python utils/download_gift_eval.py \
+    --output-dir /group-volume/ts-dataset/benchmarks/gift_eval/
+
+# Run evaluation
+python run_benchmark.py \
+    --model-path /path/to/model \
+    --benchmarks gift_eval \
+    --gift-eval-data /group-volume/ts-dataset/benchmarks/gift_eval/
+```
+
+#### `fev_bench` — fev-bench (AutoGluon / Amazon)
+
+> **Paper**: [arXiv:2509.26468](https://arxiv.org/abs/2509.26468)
+> **Package**: [pypi.org/project/fev](https://pypi.org/project/fev/) (v0.7.0+)
+> **Leaderboard**: [huggingface.co/spaces/autogluon/fev-bench](https://huggingface.co/spaces/autogluon/fev-bench)
+> **Requires**: `pip install fev`
+
+100 tasks across 96 unique datasets spanning 7 domains, with 46 tasks featuring covariates (known future, past dynamic, static).
+
+| Property | Value |
+|----------|-------|
+| Tasks | 100 (54 univariate + 46 with covariates) |
+| Datasets | 96 unique |
+| Quantiles | {0.1, 0.2, ..., 0.9} |
+| Evaluation | Non-overlapping rolling windows (1–20 per task) |
+| Primary metric | SQL (Scaled Quantile Loss) |
+| Aggregation | Win Rate (tie=0.5) + Skill Score + Bootstrap CI (B=1000) |
+| Covariates | known_dynamic, past_dynamic, static |
+
+**Representative baselines for comparison**:
+| Model | Type | Reference |
+|-------|------|-----------|
+| Chronos-2 (120M) | Foundation model | Amazon (2025) |
+| TimesFM (200M) | Foundation model | Google (2024) |
+| AutoGluon-TimeSeries | AutoML | Amazon (2024) |
+| SeasonalNaive | Statistical baseline | — |
+| ETS / AutoARIMA | Statistical | — |
+
+```bash
+# Download data
+python utils/download_fev_bench.py \
+    --output-dir /group-volume/ts-dataset/benchmarks/fev_bench/
+
+# Run evaluation
+python run_benchmark.py \
+    --model-path /path/to/model \
+    --benchmarks fev_bench \
+    --fev-data /group-volume/ts-dataset/benchmarks/fev_bench/
+```
+
+#### `ltsf` — LTSF Benchmark (DLinear / PatchTST / iTransformer)
+
+> **Origin**: DLinear paper ([arXiv:2205.13504](https://arxiv.org/abs/2205.13504), AAAI 2023)
+> **Standardized by**: PatchTST, iTransformer, TimesNet, Crossformer, FEDformer
+
+The standard long-term series forecasting benchmark used by virtually all supervised time series transformer papers. Evaluates **point forecast accuracy** on z-normalized multivariate data.
+
+| Property | Value |
+|----------|-------|
+| Datasets | 9 (ETTh1, ETTh2, ETTm1, ETTm2, Weather, Traffic, Electricity, Exchange, ILI) |
+| Horizons | {96, 192, 336, 720} (ILI: {24, 36, 48, 60}) |
+| Tasks | 9 × 4 = 36 |
+| Lookback | 96 timesteps (configurable) |
+| Normalization | Per-variable z-score using train-set statistics only |
+| Evaluation | Stride-1 sliding window over test split |
+| Metrics | MSE, MAE on z-normalized values (flat mean) |
+| Splits | ETT: 6:2:2, Others: 7:1:2 (chronological) |
+| Forecasting | Channel-independent (each variable as univariate) |
+
+**Note**: Chronos-2 does NOT evaluate on LTSF in the paper. This benchmark enables cross-comparison with supervised baselines like PatchTST, iTransformer, DLinear that are primarily evaluated on LTSF.
+
+**LTSF datasets**:
+| Dataset | Variables | Frequency | Total Timesteps | Domain |
+|---------|-----------|-----------|-----------------|--------|
+| ETTh1/h2 | 7 | Hourly | 17,420 | Energy (Electricity Transformer Temperature) |
+| ETTm1/m2 | 7 | 15-min | 69,680 | Energy (Electricity Transformer Temperature) |
+| Weather | 21 | 10-min | 52,696 | Meteorology |
+| Traffic | 862 | Hourly | 17,544 | Transportation |
+| Electricity | 321 | Hourly | 26,304 | Energy (consumption) |
+| Exchange | 8 | Daily | 7,588 | Finance (exchange rates) |
+| ILI | 7 | Weekly | 966 | Healthcare (influenza-like illness) |
+
+**Representative baselines for comparison**:
+| Model | Type | MSE (avg) | Reference |
+|-------|------|-----------|-----------|
+| PatchTST | Supervised transformer | ~0.35 | Nie et al. (2023) |
+| iTransformer | Supervised transformer | ~0.36 | Liu et al. (2024) |
+| DLinear | Linear model | ~0.38 | Zeng et al. (2023) |
+| TimesNet | Supervised CNN | ~0.37 | Wu et al. (2023) |
+| Crossformer | Supervised transformer | ~0.40 | Zhang & Yan (2023) |
+| FEDformer | Supervised transformer | ~0.42 | Zhou et al. (2022) |
+
+```bash
+# Download data
+python utils/download_ltsf.py \
+    --output-dir /group-volume/ts-dataset/benchmarks/ltsf/
+
+# Run evaluation
+python run_benchmark.py \
+    --model-path /path/to/model \
+    --benchmarks ltsf \
+    --ltsf-data /group-volume/ts-dataset/benchmarks/ltsf/
+```
 
 ---
 
@@ -184,9 +304,10 @@ All benchmark datasets are pre-downloaded to local disk on the GPU server:
 
 ```
 /group-volume/ts-dataset/benchmarks/
-├── chronos/       # 42 datasets (Chronos I + II)
-├── fev_bench/     # ~48 datasets
-└── gift_eval/     # ~30 datasets
+├── chronos/       # 42 datasets (Chronos I + II) — Arrow IPC format
+├── gift_eval/     # ~30 datasets — HuggingFace snapshot
+├── fev_bench/     # ~48 datasets — HuggingFace Parquet
+└── ltsf/          # 9 datasets — CSV files
 ```
 
 For a fresh setup, download datasets to a local directory:
@@ -194,23 +315,37 @@ For a fresh setup, download datasets to a local directory:
 ```bash
 cd scripts/forecasting/evaluation
 
-# Download for Chronos benchmarks
+# Chronos benchmarks (Arrow format)
 python utils/download_eval_datasets.py \
-    --config configs/chronos-lite.yaml \
-    --output-dir /path/to/datasets/
+    --config configs/chronos-full.yaml \
+    --output-dir /path/to/benchmarks/chronos/
 
-python utils/download_eval_datasets.py \
-    --config configs/chronos-i.yaml configs/chronos-ii.yaml \
-    --output-dir /path/to/datasets/
+# GIFT-Eval (from Salesforce/GiftEval HuggingFace)
+python utils/download_gift_eval.py \
+    --output-dir /path/to/benchmarks/gift_eval/
+
+# fev-bench (from autogluon/fev_datasets HuggingFace)
+python utils/download_fev_bench.py \
+    --output-dir /path/to/benchmarks/fev_bench/
+
+# LTSF (9 CSV files)
+python utils/download_ltsf.py \
+    --output-dir /path/to/benchmarks/ltsf/
 ```
 
-The datasets will be stored in Arrow IPC format:
+The Chronos datasets are stored in Arrow IPC format:
 ```
-/path/to/datasets/
+/path/to/benchmarks/chronos/
 ├── m4_hourly/
 │   └── data-00000-of-00001.arrow
 ├── m4_monthly/
 │   └── data-00000-of-00001.arrow
+└── ...
+
+/path/to/benchmarks/ltsf/
+├── ETTh1.csv
+├── ETTh2.csv
+├── Weather.csv
 └── ...
 ```
 
@@ -337,7 +472,13 @@ Required:
   --model-path PATH        Path to model checkpoint or HuggingFace model ID
   --benchmarks NAME [...]  Benchmark(s) to run:
                            chronos_i, chronos_ii, chronos_lite, chronos_extended,
-                           chronos_full, lite, extended, gift_eval, fev_bench
+                           chronos_full, lite, extended, gift_eval, fev_bench, ltsf
+
+Data paths (benchmark-specific):
+  --datasets-root DIR      Root directory for Chronos datasets (Arrow IPC format)
+  --gift-eval-data DIR     GIFT-Eval data directory (Salesforce/GiftEval HF snapshot)
+  --fev-data DIR           fev-bench data directory (autogluon/fev_datasets HF snapshot)
+  --ltsf-data DIR          LTSF data directory (9 CSV files)
 
 Optional:
   --output-dir DIR         Base directory for results (default: results/experiments/)
@@ -345,8 +486,11 @@ Optional:
   --device DEVICE          cuda, cuda:0, cpu (default: cuda)
   --torch-dtype DTYPE      float32, bfloat16 (default: float32)
   --batch-size N           Inference batch size (default: 32)
-  --datasets-root DIR      Root directory for local datasets (enables local-only mode)
+  --seed N                 Random seed for reproducibility (default: 42)
   --dry-run                Check data/model availability without running evaluation
+  --resume                 Resume interrupted evaluation from partial results
+  --verbose                Enable verbose logging (per-series progress)
+  --quiet                  Suppress per-dataset progress output
   --compare-with DIR [..] Result directories to compare against
 ```
 
@@ -461,8 +605,9 @@ scripts/forecasting/evaluation/
 ├── benchmarks/                   # Pluggable benchmark adapters
 │   ├── base.py                   #   BenchmarkAdapter ABC (interface)
 │   ├── chronos_bench.py          #   Chronos I/II, Lite, Extended, Full
-│   ├── gift_eval.py              #   GIFT-Eval adapter
-│   └── fev_bench.py              #   fev-bench adapter
+│   ├── gift_eval.py              #   GIFT-Eval adapter (Salesforce)
+│   ├── fev_bench.py              #   fev-bench adapter (AutoGluon)
+│   └── ltsf.py                   #   LTSF adapter (DLinear/PatchTST)
 │
 ├── configs/                      # Benchmark configuration (YAML)
 │   ├── chronos-lite.yaml         #   5 datasets — quick validation
@@ -471,7 +616,8 @@ scripts/forecasting/evaluation/
 │   ├── chronos-ii.yaml           #   27 datasets — Chronos Bench II (zero-shot)
 │   ├── chronos-full.yaml         #   42 datasets — all Chronos datasets
 │   ├── gift-eval.yaml            #   GIFT-Eval reference config
-│   └── fev-bench.yaml            #   fev-bench reference config
+│   ├── fev-bench.yaml            #   fev-bench reference config
+│   └── ltsf.yaml                 #   LTSF benchmark config (9 datasets)
 │
 ├── results/                      # Reference baseline results (CSV)
 │   ├── seasonal-naive-*.csv      #   Seasonal Naive baseline scores
@@ -483,7 +629,8 @@ scripts/forecasting/evaluation/
     ├── download_eval_datasets.py #   Chronos benchmarks (HuggingFace → local)
     ├── download_failed_datasets.py # Recover failed/incompatible downloads
     ├── download_gift_eval.py     #   GIFT-Eval data download
-    └── download_fev_bench.py     #   fev-bench data download
+    ├── download_fev_bench.py     #   fev-bench data download
+    └── download_ltsf.py          #   LTSF CSV data download
 ```
 
 ### Design Principles
@@ -515,12 +662,16 @@ results/experiments/
 
 ## Estimated Runtime
 
-| Benchmark | A100 (bfloat16) | A100 (float32) | CPU (72 cores) |
-|-----------|-----------------|----------------|----------------|
-| `chronos_lite` (5 ds) | ~3 min | ~5 min | ~40 min |
-| `chronos_extended` (15 ds) | ~15 min | ~25 min | ~3 hr |
-| `chronos_i` (15 ds) | ~30 min | ~50 min | ~5 hr |
-| `chronos_ii` (27 ds) | ~60 min | ~90 min | ~10 hr |
-| `chronos_full` (42 ds) | ~90 min | ~120 min | ~12 hr |
+| Benchmark | Tasks | A100 (bfloat16) | A100 (float32) | CPU (72 cores) |
+|-----------|-------|-----------------|----------------|----------------|
+| `chronos_lite` | 5 | ~3 min | ~5 min | ~40 min |
+| `chronos_extended` | 15 | ~15 min | ~25 min | ~3 hr |
+| `chronos_i` | 15 | ~30 min | ~50 min | ~5 hr |
+| `chronos_ii` | 27 | ~60 min | ~90 min | ~10 hr |
+| `chronos_full` | 42 | ~90 min | ~120 min | ~12 hr |
+| `gift_eval` | ~98 | ~2 hr | ~3 hr | ~24 hr |
+| `fev_bench` | 100 | ~3 hr | ~5 hr | ~30 hr |
+| `ltsf` | 36 | ~30 min | ~45 min | ~4 hr |
 
 > **Tip**: Use `--torch-dtype bfloat16` on GPU for faster inference with minimal accuracy impact.
+> **Note**: GIFT-Eval and fev-bench times depend on dataset download speed if not pre-cached.

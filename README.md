@@ -186,26 +186,57 @@ Wraps each `Chronos2EncoderBlock.forward()` with `torch.utils.checkpoint.checkpo
 
 ## Evaluation Benchmarks
 
-| Benchmark | Datasets | Description |
-|-----------|----------|-------------|
-| **Lite** | 5 | Quick training-time eval (M4, Weather, NN5, Exchange Rate) |
-| **Zero-Shot** | 27 | Unseen datasets: ETT, Traffic, Electricity, COVID, Tourism, etc. |
-| **In-Domain** | 15 | Datasets included in training corpus |
+### Supported Benchmark Suites
 
-Metrics: **WQL** (Weighted Quantile Loss) and **MASE** (Mean Absolute Scaled Error).
+| Suite | Tasks | Metrics | Forecast Type | Use Case |
+|-------|-------|---------|---------------|----------|
+| **Chronos Lite** | 5 | WQL, MASE | Probabilistic | Quick training-time validation (~3 min) |
+| **Chronos Extended** | 15 | WQL, MASE | Probabilistic | Thorough validation (~15 min) |
+| **Chronos Bench I** | 15 | WQL, MASE | Probabilistic | In-domain evaluation (paper) |
+| **Chronos Bench II** | 27 | WQL, MASE | Probabilistic | Zero-shot evaluation (paper) |
+| **GIFT-Eval** | ~98 | CRPS, MASE, WQL, sMAPE + 7 more | Probabilistic | Multi-domain comprehensive eval |
+| **fev-bench** | 100 | SQL, Win Rate, Skill Score | Probabilistic | Covariate-capable evaluation |
+| **LTSF** | 36 | MSE, MAE | Point (median) | Cross-comparison with supervised baselines |
+
+### Benchmark Comparison
+
+| | Chronos I/II | GIFT-Eval | fev-bench | LTSF |
+|---|---|---|---|---|
+| **Origin** | Amazon (Chronos paper) | Salesforce AI Research | AutoGluon (Amazon) | DLinear (AAAI 2023) |
+| **Evaluation** | Rolling windows | Rolling windows (max 20) | Rolling windows (1–20) | Stride-1 sliding window |
+| **Normalization** | None (raw values) | None (raw values) | None (raw values) | z-score (train stats) |
+| **Covariates** | No | Some tasks | 46 of 100 tasks | No |
+| **Multivariate** | Univariate only | Some tasks | Some tasks | Channel-independent |
+| **Baseline** | Seasonal Naive | Naive predictor | SeasonalNaive | N/A (supervised models) |
+| **Key baselines** | Chronos-T5/Bolt, ARIMA | Chronos-2, TimesFM, Moirai | Chronos-2, TimesFM, AutoGluon | PatchTST, iTransformer, DLinear |
+
+> See [`scripts/forecasting/evaluation/README.md`](scripts/forecasting/evaluation/README.md) for detailed benchmark protocols, metric formulas, and baseline performance.
 
 ## Proxy / Offline Setup
 
 For GPU servers with network restrictions:
 
 ```bash
-# Pre-download evaluation datasets
-HTTPS_PROXY=http://proxy:8080 python scripts/forecasting/evaluation/utils/download_eval_datasets.py \
+# Set proxy and cache
+export HTTPS_PROXY=http://proxy:8080
+export HF_HOME=/group-volume/hf_cache
+
+# Chronos benchmarks (42 datasets, Arrow format)
+python scripts/forecasting/evaluation/utils/download_eval_datasets.py \
     --config scripts/forecasting/evaluation/configs/chronos-full.yaml \
     --output-dir /group-volume/ts-dataset/benchmarks/chronos/
 
-# Set HuggingFace cache directory
-export HF_HOME=/group-volume/hf_cache
+# GIFT-Eval (Salesforce/GiftEval from HuggingFace)
+python scripts/forecasting/evaluation/utils/download_gift_eval.py \
+    --output-dir /group-volume/ts-dataset/benchmarks/gift_eval/
+
+# fev-bench (autogluon/fev_datasets from HuggingFace)
+python scripts/forecasting/evaluation/utils/download_fev_bench.py \
+    --output-dir /group-volume/ts-dataset/benchmarks/fev_bench/
+
+# LTSF (9 CSV files — ETT, Weather, Traffic, etc.)
+python scripts/forecasting/evaluation/utils/download_ltsf.py \
+    --output-dir /group-volume/ts-dataset/benchmarks/ltsf/
 ```
 
 ## Roadmap
