@@ -125,11 +125,10 @@ health_report_interval: 200
 # ===========================================================================
 # Benchmark Evaluation (Training-Time Validation)
 # ===========================================================================
-# Evaluation configs reference: scripts/forecasting/evaluation/configs/
-# Path resolution: tries script_dir → evaluation dir → project root
+# Path is relative to project root (tsm-trainer/).
 # All evaluation datasets must be pre-downloaded to datasets_root.
 #
-# Available benchmark configs:
+# Available benchmark configs (in scripts/forecasting/evaluation/configs/):
 #   chronos-lite.yaml      — 5 datasets, ~3 min (quick validation)
 #   chronos-extended.yaml  — 15 datasets, ~15 min (thorough validation)
 #   chronos-i.yaml         — 15 datasets, ~30 min (Chronos Bench I, in-domain)
@@ -141,7 +140,7 @@ health_report_interval: 200
 #   "mase"      — Track best MASE (point forecast accuracy)
 #   "composite" — Weighted combination: 0.6×WQL + 0.4×MASE
 
-benchmark_config: "configs/chronos-lite.yaml"
+benchmark_config: "scripts/forecasting/evaluation/configs/chronos-lite.yaml"
 benchmark_eval_steps: 200
 benchmark_top_k_checkpoints: 3
 benchmark_batch_size: 32

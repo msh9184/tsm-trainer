@@ -70,7 +70,8 @@ from transformers.trainer_callback import TrainerCallback
 from transformers.training_args import TrainingArguments
 
 # Add project root to path
-project_root = Path(__file__).resolve().parents[2]
+# train_chronos2.py → training/ → forecasting/ → scripts/ → tsm-trainer/
+project_root = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(project_root / "src"))
 
 from chronos.chronos2.config import Chronos2CoreConfig
@@ -1716,29 +1717,17 @@ def run_training(config: dict):
     benchmark_cb = None
 
     if benchmark_config_path:
-        # Resolve path: try relative to script dir, then evaluation dir, then project root
+        # Resolve path relative to project root (e.g., "scripts/forecasting/evaluation/configs/chronos-lite.yaml")
         bm_path = Path(benchmark_config_path)
         if not bm_path.is_absolute():
-            script_dir = Path(__file__).parent
-            candidates = [
-                script_dir / benchmark_config_path,                          # scripts/training/configs/...
-                script_dir.parent / "evaluation" / benchmark_config_path,    # scripts/evaluation/configs/...
-                script_dir.parent.parent / benchmark_config_path,            # project root/configs/...
-            ]
-            bm_path = next((c for c in candidates if c.exists()), candidates[0])
+            bm_path = project_root / benchmark_config_path
 
         # Resolve Tier 2 path (if configured)
         bm_tier2_path = None
         if benchmark_tier2_config:
             bm_tier2_path = Path(benchmark_tier2_config)
             if not bm_tier2_path.is_absolute():
-                script_dir = Path(__file__).parent
-                candidates_t2 = [
-                    script_dir / benchmark_tier2_config,
-                    script_dir.parent / "evaluation" / benchmark_tier2_config,
-                    script_dir.parent.parent / benchmark_tier2_config,
-                ]
-                bm_tier2_path = next((c for c in candidates_t2 if c.exists()), candidates_t2[0])
+                bm_tier2_path = project_root / benchmark_tier2_config
             if not bm_tier2_path.exists():
                 if is_main_process():
                     logger.warning(f"Tier 2 benchmark config not found: {bm_tier2_path}. Tier 2 disabled.")
@@ -1777,7 +1766,7 @@ def run_training(config: dict):
                 if is_main_process():
                     logger.info(f"Lite benchmark enabled (legacy): {bm_path.name} every {benchmark_eval_steps} steps")
         elif is_main_process():
-            logger.warning(f"Benchmark config not found at any of: {[str(c) for c in candidates]}. Benchmark evaluation disabled.")
+            logger.warning(f"Benchmark config not found: {bm_path}. Benchmark evaluation disabled.")
 
     # Comprehensive Training Callback (always active)
     comprehensive_cb = ComprehensiveTrainingCallback(

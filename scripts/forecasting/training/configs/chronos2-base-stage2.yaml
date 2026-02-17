@@ -100,7 +100,7 @@ seed: 42
 # ===========================================================================
 # Saving & Logging
 # ===========================================================================
-output_dir: "./output/chronos2-base-stage2"
+output_dir: "./outputs/chronos2-base-stage2"
 save_steps: 200
 log_steps: 20
 save_total_limit: 3
@@ -110,7 +110,7 @@ health_report_interval: 200
 # ===========================================================================
 # Benchmark Evaluation (Training-Time Validation)
 # ===========================================================================
-benchmark_config: "configs/chronos-lite.yaml"
+benchmark_config: "scripts/forecasting/evaluation/configs/chronos-lite.yaml"
 benchmark_eval_steps: 200
 benchmark_top_k_checkpoints: 3
 benchmark_batch_size: 32

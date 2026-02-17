@@ -138,7 +138,7 @@ health_report_interval: 200
 #   chronos-ii.yaml        — 27 datasets, ~60 min (Chronos Bench II, zero-shot)
 #   chronos-full.yaml      — 42 datasets, ~90 min (all Chronos datasets)
 
-benchmark_config: "configs/chronos-lite.yaml"
+benchmark_config: "scripts/forecasting/evaluation/configs/chronos-lite.yaml"
 benchmark_eval_steps: 200
 benchmark_top_k_checkpoints: 3
 benchmark_batch_size: 32
