@@ -85,11 +85,14 @@ BENCHMARK_CONFIG_MAP = {
 
 def collect_environment_info() -> dict:
     """Collect system and runtime environment information."""
+    import os
+
     info = {
         "python_version": sys.version.split()[0],
         "platform": platform.platform(),
         "hostname": platform.node(),
         "timestamp": datetime.now().isoformat(),
+        "hf_hub_offline": os.environ.get("HF_HUB_OFFLINE", "0") == "1",
     }
 
     # PyTorch info
@@ -1090,6 +1093,15 @@ def parse_args():
         help="Resume from checkpoint if previous run was interrupted",
     )
 
+    # Offline mode
+    parser.add_argument(
+        "--offline", action="store_true",
+        help=(
+            "Enable offline mode (sets HF_HUB_OFFLINE=1). "
+            "Auto-enabled when --datasets-root is set."
+        ),
+    )
+
     # Logging
     parser.add_argument(
         "--verbose", action="store_true",
@@ -1100,7 +1112,26 @@ def parse_args():
         help="Reduce logging to warnings and errors only",
     )
 
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    # --- Environment variable auto-configuration ---
+    import os
+
+    # Auto-detect offline mode: if local data paths are provided, enable offline
+    if args.offline or args.datasets_root:
+        os.environ["HF_HUB_OFFLINE"] = "1"
+
+    # Fallback: read data paths from environment variables if not set via CLI
+    if args.datasets_root is None:
+        args.datasets_root = os.environ.get("TSM_DATASETS_ROOT", None)
+    if args.gift_eval_data is None:
+        args.gift_eval_data = os.environ.get("GIFT_EVAL", None)
+    if args.fev_data is None:
+        args.fev_data = os.environ.get("FEV_DATA", os.environ.get("HF_DATASETS_CACHE", None))
+    if args.ltsf_data is None:
+        args.ltsf_data = os.environ.get("LTSF_DATA", None)
+
+    return args
 
 
 def run_dry_run(args):
@@ -1198,6 +1229,7 @@ def run_dry_run(args):
     logger.info(f"    PyArrow: {env_info.get('pyarrow_version', 'N/A')}")
     logger.info(f"    Datasets: {env_info.get('datasets_version', 'N/A')}")
     logger.info(f"    GluonTS: {env_info.get('gluonts_version', 'N/A')}")
+    logger.info(f"    Offline mode: {env_info.get('hf_hub_offline', False)}")
     logger.info("")
     logger.info("  Dry run complete. No evaluation was performed.")
     logger.info("=" * 72)
@@ -1218,6 +1250,19 @@ if __name__ == "__main__":
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         level=log_level,
     )
+
+    # Log resolved data paths and offline mode
+    import os
+    if os.environ.get("HF_HUB_OFFLINE") == "1":
+        logger.info("Offline mode: HF_HUB_OFFLINE=1 (auto-configured)")
+    if args.datasets_root:
+        logger.info(f"Datasets root: {args.datasets_root}")
+    if args.gift_eval_data:
+        logger.info(f"GIFT-Eval data: {args.gift_eval_data}")
+    if args.fev_data:
+        logger.info(f"fev-bench data: {args.fev_data}")
+    if args.ltsf_data:
+        logger.info(f"LTSF data: {args.ltsf_data}")
 
     if args.dry_run:
         run_dry_run(args)
