@@ -10,8 +10,8 @@
 #   Stage 2: context_length=8192, 50K steps, LR=3e-5
 #            → see chronos2-base-stage2.yaml
 #
-# GPU Target: 8 nodes × 8 GPUs = 64× A100 80GB (mpirun)
-# Effective batch size: 1536 × 1 (single GPU) or distributed
+# GPU Target: 3 nodes × 8 GPUs = 24× A100 80GB (mpirun)
+# Effective batch size: 1024 per device (distributed)
 #
 # Usage:
 #   bash scripts/forecasting/training/train.sh \
@@ -102,7 +102,7 @@ min_past: 60
 # Training Hyperparameters
 # ===========================================================================
 max_steps: 500_000
-per_device_train_batch_size: 1536
+per_device_train_batch_size: 1024
 gradient_accumulation_steps: 1
 learning_rate: 1.0e-4
 lr_scheduler_type: "cosine"
@@ -115,7 +115,7 @@ seed: 42
 # ===========================================================================
 # Saving & Logging
 # ===========================================================================
-output_dir: "./output/chronos2-base-stage1"
+output_dir: "./outputs/chronos2-base-stage1"
 save_steps: 200
 log_steps: 20
 save_total_limit: 3
@@ -185,4 +185,4 @@ fsdp_config:
 # ===========================================================================
 # Resume (uncomment to continue from a checkpoint)
 # ===========================================================================
-# resume_from_checkpoint: "./output/chronos2-base-stage1/checkpoint-50000"
+# resume_from_checkpoint: "./outputs/chronos2-base-stage1/checkpoint-50000"

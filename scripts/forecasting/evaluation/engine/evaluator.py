@@ -224,7 +224,7 @@ def load_dataset_from_config(
             f"Dataset '{ds_name}' not found at local path: {searched}\n"
             f"  datasets_root: {datasets_root}\n"
             f"  Expected: {datasets_root}/{ds_name}/\n"
-            f"  Hint: Run download_eval_datasets.py first, or check the dataset name."
+            f"  Hint: Run utils/download_eval_datasets.py first, or check the dataset name."
         )
     else:
         # Load from HuggingFace (uses cache) — only when local_only is False and hf_repo is set

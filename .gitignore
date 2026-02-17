@@ -173,3 +173,6 @@ docs/
 *.pdf
 scratch/
 question.txt
+CLAUDE.md
+output/
+outputs/

@@ -1002,10 +1002,10 @@ def _run_lite_benchmark(
 ) -> dict:
     """Run lite benchmark evaluation and return metrics dict.
 
-    Uses the same evaluation logic as scripts/evaluation/evaluate.py
-    but runs on rank-0 only during training.
+    Uses the evaluation engine (scripts/forecasting/evaluation/engine/)
+    to run rank-0 only benchmark evaluation during training.
 
-    Supports both local datasets and HuggingFace Hub datasets via _open_hf_dataset.
+    Supports local datasets via datasets_root configuration.
 
     Benchmark config YAML format:
         - name: "dataset_name"

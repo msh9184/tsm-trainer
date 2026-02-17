@@ -195,11 +195,11 @@ For a fresh setup, download datasets to a local directory:
 cd scripts/forecasting/evaluation
 
 # Download for Chronos benchmarks
-python download_eval_datasets.py \
+python utils/download_eval_datasets.py \
     --config configs/chronos-lite.yaml \
     --output-dir /path/to/datasets/
 
-python download_eval_datasets.py \
+python utils/download_eval_datasets.py \
     --config configs/chronos-i.yaml configs/chronos-ii.yaml \
     --output-dir /path/to/datasets/
 ```
@@ -479,9 +479,11 @@ scripts/forecasting/evaluation/
 │   ├── chronos-bolt-*-*.csv      #   Chronos-Bolt model scores
 │   └── chronos-2-lite-*.csv      #   Chronos-2 lite benchmark reference
 │
-├── download_eval_datasets.py     # Dataset download (HuggingFace → local)
-├── download_gift_eval.py         # GIFT-Eval data download
-└── download_fev_bench.py         # fev-bench data download
+└── utils/                       # Dataset download utilities
+    ├── download_eval_datasets.py #   Chronos benchmarks (HuggingFace → local)
+    ├── download_failed_datasets.py # Recover failed/incompatible downloads
+    ├── download_gift_eval.py     #   GIFT-Eval data download
+    └── download_fev_bench.py     #   fev-bench data download
 ```
 
 ### Design Principles

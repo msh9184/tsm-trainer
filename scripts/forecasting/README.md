@@ -212,27 +212,19 @@ KernelSynth composes 1–5 random kernels (periodic, RBF, trend, noise) via `+`/
 
 ```bash
 # Lite benchmark (5 datasets)
-python evaluation/download_eval_datasets.py \
+python evaluation/utils/download_eval_datasets.py \
     --config evaluation/configs/chronos-lite.yaml \
     --output-dir /group-volume/ts-dataset/benchmarks/chronos/
 
 # All Chronos datasets (42 datasets)
-python evaluation/download_eval_datasets.py \
+python evaluation/utils/download_eval_datasets.py \
     --config evaluation/configs/chronos-full.yaml \
     --output-dir /group-volume/ts-dataset/benchmarks/chronos/
 
 # With proxy (for restricted networks)
-HTTPS_PROXY=http://proxy:8080 python evaluation/download_eval_datasets.py \
+HTTPS_PROXY=http://proxy:8080 python evaluation/utils/download_eval_datasets.py \
     --config evaluation/configs/chronos-ii.yaml \
     --output-dir /group-volume/ts-dataset/benchmarks/chronos/
-```
-
-### Validate Datasets
-
-```bash
-python validate_datasets.py                    # Check default datasets
-python validate_datasets.py --list-all         # List available datasets
-python validate_datasets.py --count-all        # Count series (slow)
 ```
 
 ---
@@ -578,18 +570,16 @@ scripts/forecasting/
 │       ├── chronos-t5-*.yaml           # Original Chronos configs
 │       └── chronos-gpt2.yaml
 ├── evaluation/
-│   ├── evaluate.py              # Standalone evaluation (WQL/MASE)
-│   ├── download_eval_datasets.py # Offline dataset downloader
-│   ├── agg-relative-score.py    # Aggregate relative scoring
-│   ├── configs/
-│   │   ├── chronos-lite.yaml    # 5 datasets (quick validation)
-│   │   ├── chronos-extended.yaml # 15 datasets (thorough validation)
-│   │   ├── chronos-i.yaml       # 15 in-domain datasets (paper)
-│   │   ├── chronos-ii.yaml      # 27 zero-shot datasets (paper)
-│   │   ├── chronos-full.yaml    # 42 all Chronos datasets
-│   │   ├── gift-eval.yaml       # GIFT-Eval benchmark
-│   │   └── fev-bench.yaml       # FEV-Bench benchmark
-│   └── results/                 # Pre-computed baseline results
-├── kernel-synth.py              # KernelSynth GP data generator
-└── validate_datasets.py         # Dataset integrity checker
+│   ├── run_benchmark.py         # Unified benchmark CLI
+│   ├── compare_models.py        # Model comparison tables
+│   ├── engine/                  # Core evaluation engine
+│   │   ├── metrics.py           #   WQL, MASE, SQL, CRPS, ...
+│   │   ├── forecaster.py        #   BaseForecaster + model adapters
+│   │   ├── evaluator.py         #   Unified evaluation loop
+│   │   └── aggregator.py        #   gmean, bootstrap CI, win rate
+│   ├── benchmarks/              # Pluggable benchmark adapters
+│   ├── configs/                 # Benchmark dataset configs (YAML)
+│   ├── results/                 # Pre-computed baseline results
+│   └── utils/                   # Dataset download utilities
+└── kernel-synth.py              # KernelSynth GP data generator
 ```

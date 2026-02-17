@@ -112,11 +112,14 @@ tsm-trainer/
 │       │   ├── train.sh               # mpirun launcher
 │       │   └── configs/               # Training YAML configs
 │       ├── evaluation/
-│       │   ├── evaluate.py            # Evaluation with MASE/WQL
-│       │   ├── download_eval_datasets.py
-│       │   └── configs/               # Benchmark dataset configs
-│       ├── kernel-synth.py            # Synthetic data generator
-│       └── validate_datasets.py       # Dataset integrity checker
+│       │   ├── run_benchmark.py       # Unified benchmark CLI
+│       │   ├── compare_models.py      # Model comparison tables
+│       │   ├── engine/                # Core evaluation engine
+│       │   ├── benchmarks/            # Benchmark adapters
+│       │   ├── configs/               # Benchmark dataset configs
+│       │   ├── results/               # Pre-computed baselines
+│       │   └── utils/                 # Dataset downloaders
+│       └── kernel-synth.py            # Synthetic data generator
 └── src/
     └── chronos/                       # Core model library
         ├── chronos2/                  # Chronos-2 (encoder-only)
@@ -192,7 +195,7 @@ For GPU servers with network restrictions:
 
 ```bash
 # Pre-download evaluation datasets
-HTTPS_PROXY=http://proxy:8080 python scripts/forecasting/evaluation/download_eval_datasets.py \
+HTTPS_PROXY=http://proxy:8080 python scripts/forecasting/evaluation/utils/download_eval_datasets.py \
     --config scripts/forecasting/evaluation/configs/chronos-full.yaml \
     --output-dir /group-volume/ts-dataset/benchmarks/chronos/
 

@@ -69,7 +69,7 @@ quantiles:
 # Model Initialization (continue from Stage 1)
 # ===========================================================================
 random_init: false
-model_id: "./output/chronos2-base-stage1/final-checkpoint"
+model_id: "./outputs/chronos2-base-stage1/final-checkpoint"
 
 # ===========================================================================
 # Training Data (same as Stage 1)

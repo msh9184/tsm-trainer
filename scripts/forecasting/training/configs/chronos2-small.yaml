@@ -98,7 +98,7 @@ seed: 42
 # ===========================================================================
 # Saving & Logging
 # ===========================================================================
-output_dir: "./output/chronos2-small-stage1"
+output_dir: "./outputs/chronos2-small-stage1"
 save_steps: 200
 log_steps: 20
 save_total_limit: 3
