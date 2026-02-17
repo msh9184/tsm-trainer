@@ -361,16 +361,20 @@ class GiftEvalAdapter(BenchmarkAdapter):
         logger.info(f"GIFT-Eval: evaluating {n_total} task configurations")
 
         # Suppress noisy warnings from GluonTS and pandas:
-        # 1) GluonTS QuantileForecast emits "mean prediction is not stored"
-        #    every time MSE(forecast_type="mean") accesses .mean — harmless,
-        #    median is used as fallback (standard practice for quantile models).
+        #
+        # 1) GluonTS QuantileForecast.mean uses logger.warning() (logging module)
+        #    to emit "mean prediction is not stored" every time
+        #    MSE(forecast_type="mean") accesses .mean — harmless, median is
+        #    used as fallback (standard practice for quantile models).
+        #    Must suppress via logging.getLogger, NOT warnings.filterwarnings.
+        #
         # 2) pandas FutureWarning for deprecated freq aliases ('H'->'h',
         #    'T'->'min') originating from gluonts/gift-eval internals.
-        warnings.filterwarnings(
-            "ignore",
-            message="The mean prediction is not stored",
-            module="gluonts",
-        )
+        #    These use warnings.warn(), so filterwarnings works.
+        _gluonts_forecast_logger = logging.getLogger("gluonts.model.forecast")
+        _prev_level = _gluonts_forecast_logger.level
+        _gluonts_forecast_logger.setLevel(logging.ERROR)
+
         warnings.filterwarnings(
             "ignore",
             category=FutureWarning,
@@ -456,6 +460,9 @@ class GiftEvalAdapter(BenchmarkAdapter):
                     "domain": self._get_domain(ds_name),
                     "elapsed_s": round(elapsed, 1),
                 })
+
+        # Restore gluonts.model.forecast logger level
+        _gluonts_forecast_logger.setLevel(_prev_level)
 
         return pd.DataFrame(results)
 
