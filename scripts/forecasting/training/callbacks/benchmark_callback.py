@@ -44,7 +44,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Ensure evaluation engine is importable
-_EVAL_DIR = Path(__file__).parent.parent / "evaluation"
+# Path: callbacks/benchmark_callback.py → training/ → forecasting/ → forecasting/evaluation/
+_EVAL_DIR = Path(__file__).resolve().parent.parent.parent / "evaluation"
 if str(_EVAL_DIR) not in sys.path:
     sys.path.insert(0, str(_EVAL_DIR))
 
