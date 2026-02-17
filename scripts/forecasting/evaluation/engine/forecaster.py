@@ -233,7 +233,7 @@ class Chronos2Forecaster(BaseForecaster):
         self._model_path = model_path
         self._device = device
         self._pipeline = BaseChronosPipeline.from_pretrained(
-            model_path, device_map=device, dtype=torch_dtype
+            model_path, device_map=device, torch_dtype=torch_dtype
         )
         self._model_name = Path(model_path).name if Path(model_path).exists() else model_path
 
@@ -283,7 +283,7 @@ class ChronosBoltForecaster(BaseForecaster):
         self._model_path = model_path
         self._device = device
         self._pipeline = BaseChronosPipeline.from_pretrained(
-            model_path, device_map=device, dtype=torch_dtype
+            model_path, device_map=device, torch_dtype=torch_dtype
         )
         self._model_name = Path(model_path).name if Path(model_path).exists() else model_path
 

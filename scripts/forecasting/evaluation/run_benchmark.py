@@ -102,11 +102,13 @@ def collect_environment_info() -> dict:
                 torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())
             ]
             info["gpu_memory_gb"] = [
-                round(torch.cuda.get_device_properties(i).total_mem / (1024**3), 1)
+                round(torch.cuda.get_device_properties(i).total_memory / (1024**3), 1)
                 for i in range(torch.cuda.device_count())
             ]
     except ImportError:
         info["torch_version"] = "not installed"
+    except Exception as e:
+        info["gpu_info_error"] = str(e)
 
     # Key library versions
     for lib in ["transformers", "datasets", "gluonts", "numpy", "pandas", "scipy", "pyarrow"]:
