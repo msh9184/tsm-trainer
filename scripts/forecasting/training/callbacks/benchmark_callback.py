@@ -36,9 +36,10 @@ from typing import TYPE_CHECKING
 
 import torch
 import torch.distributed as dist
+from transformers import TrainerCallback
 
 if TYPE_CHECKING:
-    from transformers import TrainerCallback, TrainerControl, TrainerState, TrainingArguments
+    from transformers import TrainerControl, TrainerState, TrainingArguments
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ def is_main_process() -> bool:
     return True
 
 
-class EnhancedBenchmarkCallback:
+class EnhancedBenchmarkCallback(TrainerCallback):
     """Multi-tier benchmark evaluation callback for training.
 
     Provides tiered validation with configurable evaluation frequency,
