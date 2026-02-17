@@ -41,6 +41,7 @@ Supported benchmarks:
     chronos_full     — Chronos Full (42 datasets, ~90 min on A100)
     gift_eval        — GIFT-Eval (~98 configs, requires gift-eval library)
     fev_bench        — fev-bench (100 tasks, requires fev library)
+    ltsf             — LTSF-Benchmark (9 datasets, MSE/MAE on z-normalized)
     lite             — Alias for chronos_lite
     extended         — Alias for chronos_extended
 """
@@ -74,6 +75,7 @@ BENCHMARK_CONFIG_MAP = {
     "chronos_extended": "chronos-extended.yaml",
     "extended": "chronos-extended.yaml",     # backward-compatible alias
     "chronos_full": "chronos-full.yaml",
+    "ltsf": "ltsf.yaml",
 }
 
 
@@ -289,6 +291,7 @@ def get_adapter(benchmark_name: str, args):
         chronos_full  — All Chronos datasets combined (42 datasets)
         gift_eval    — GIFT-Eval (~98 tasks, requires gift-eval library)
         fev_bench    — fev-bench (100 tasks, requires fev library)
+        ltsf         — LTSF-Benchmark (9 datasets, MSE/MAE, requires CSV data)
     """
     configs_dir = SCRIPT_DIR / "configs"
 
@@ -342,11 +345,23 @@ def get_adapter(benchmark_name: str, args):
             data_dir=args.fev_data,
             batch_size=args.batch_size,
         )
+    elif benchmark_name == "ltsf":
+        from benchmarks.ltsf import LTSFAdapter
+        ltsf_data = getattr(args, "ltsf_data", None)
+        if not ltsf_data:
+            raise ValueError(
+                "LTSF benchmark requires --ltsf-data argument "
+                "pointing to directory with LTSF CSV files."
+            )
+        return LTSFAdapter(
+            data_dir=ltsf_data,
+            batch_size=args.batch_size,
+        )
     else:
         raise ValueError(
             f"Unknown benchmark: {benchmark_name}. "
             f"Available: chronos_i, chronos_ii, chronos_lite, chronos_extended, "
-            f"chronos_full, lite, extended, gift_eval, fev_bench"
+            f"chronos_full, lite, extended, gift_eval, fev_bench, ltsf"
         )
 
 
@@ -672,18 +687,48 @@ def generate_report(
 
     # Key metrics summary table
     if all_summaries:
+        # Detect which metric columns are present across all summaries
+        has_wql = any(s.get("avg_wql") is not None for s in all_summaries.values())
+        has_mase = any(s.get("avg_mase") is not None for s in all_summaries.values())
+        has_mse = any(s.get("avg_mse") is not None for s in all_summaries.values())
+        has_mae = any(s.get("avg_mae") is not None for s in all_summaries.values())
+        has_sql = any(s.get("avg_sql") is not None for s in all_summaries.values())
+
+        # Build dynamic header
+        header_parts = ["Benchmark", "Datasets"]
+        if has_wql:
+            header_parts.append("WQL")
+        if has_mase:
+            header_parts.append("MASE")
+        if has_sql:
+            header_parts.append("SQL")
+        if has_mse:
+            header_parts.append("MSE")
+        if has_mae:
+            header_parts.append("MAE")
+        header_parts.append("Time")
+
         lines.extend([
             "### Key Metrics",
             "",
-            "| Benchmark | Datasets | WQL | MASE | Time |",
-            "|-----------|----------|-----|------|------|",
+            "| " + " | ".join(header_parts) + " |",
+            "|" + "|".join(["---"] * len(header_parts)) + "|",
         ])
         for bm_name, summary in all_summaries.items():
             n_ds = summary.get("n_datasets", summary.get("n_tasks", "N/A"))
-            wql = _fmt_metric(summary.get("avg_wql"))
-            mase = _fmt_metric(summary.get("avg_mase"))
-            bm_time = _fmt_time(benchmark_timings.get(bm_name))
-            lines.append(f"| {bm_name} | {n_ds} | {wql} | {mase} | {bm_time} |")
+            row_parts = [bm_name, str(n_ds)]
+            if has_wql:
+                row_parts.append(_fmt_metric(summary.get("avg_wql")))
+            if has_mase:
+                row_parts.append(_fmt_metric(summary.get("avg_mase")))
+            if has_sql:
+                row_parts.append(_fmt_metric(summary.get("avg_sql")))
+            if has_mse:
+                row_parts.append(_fmt_metric(summary.get("avg_mse")))
+            if has_mae:
+                row_parts.append(_fmt_metric(summary.get("avg_mae")))
+            row_parts.append(_fmt_time(benchmark_timings.get(bm_name)))
+            lines.append("| " + " | ".join(row_parts) + " |")
         lines.append("")
 
     # ---- Per-benchmark details ----
@@ -865,16 +910,25 @@ def _render_dataset_table(bm_name: str, results_df) -> list[str]:
 
     # Determine columns to show
     display_cols = ["dataset"]
-    for col in ["WQL", "MASE", "n_series", "elapsed_s", "sql", "crps", "smape"]:
+    for col in [
+        "horizon", "WQL", "MASE", "MSE", "MAE",
+        "n_series", "n_vars", "n_windows", "elapsed_s",
+        "sql", "crps", "smape",
+    ]:
         if col in results_df.columns:
             display_cols.append(col)
 
     # Column display names
     col_names = {
         "dataset": "Dataset",
+        "horizon": "Horizon",
         "WQL": "WQL",
         "MASE": "MASE",
+        "MSE": "MSE",
+        "MAE": "MAE",
         "n_series": "Series",
+        "n_vars": "Vars",
+        "n_windows": "Windows",
         "elapsed_s": "Time(s)",
         "sql": "SQL",
         "crps": "CRPS",
@@ -970,7 +1024,7 @@ def parse_args():
         "--benchmarks", nargs="+", required=True,
         choices=[
             "chronos_i", "chronos_ii", "chronos_lite", "chronos_extended",
-            "chronos_full", "lite", "extended", "gift_eval", "fev_bench",
+            "chronos_full", "lite", "extended", "gift_eval", "fev_bench", "ltsf",
         ],
         help="Benchmark(s) to run",
     )
@@ -1006,6 +1060,10 @@ def parse_args():
     parser.add_argument(
         "--fev-data", type=str, default=None,
         help="Local path to fev-bench data",
+    )
+    parser.add_argument(
+        "--ltsf-data", type=str, default=None,
+        help="Local path to LTSF CSV files (ETTh1.csv, Weather.csv, etc.)",
     )
 
     # Comparison

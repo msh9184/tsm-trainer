@@ -11,9 +11,15 @@
 
 from .base import BenchmarkAdapter
 from .chronos_bench import ChronosBenchmarkAdapter, ChronosLiteBenchmarkAdapter
+from .fev_bench import FevBenchAdapter
+from .gift_eval import GiftEvalAdapter
+from .ltsf import LTSFAdapter
 
 __all__ = [
     "BenchmarkAdapter",
     "ChronosBenchmarkAdapter",
     "ChronosLiteBenchmarkAdapter",
+    "FevBenchAdapter",
+    "GiftEvalAdapter",
+    "LTSFAdapter",
 ]
