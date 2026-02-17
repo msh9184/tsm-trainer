@@ -53,6 +53,7 @@ The first target model is **Chronos-2** (120M params), an encoder-only transform
 | **Health Reports** | Periodic boxed reports with loss analysis, gradient health, GPU utilization, throughput |
 | **Sparkline Plots** | Unicode sparklines for loss/LR trends directly in terminal |
 | **Distributed Benchmark** | WQL/MASE evaluation across all GPUs (FSDP-compatible) |
+| **Fast Vectorized Metrics** | Bypasses GluonTS with direct numpy computation (~100x faster metric phase) |
 | **Metric-Encoded Checkpoints** | NeMo-style filenames with step/WQL/MASE/composite scores |
 | **Top-K Checkpoint Management** | Automatic retention of best K models with worst-removal |
 | **Validation Reports** | Per-eval JSON + cumulative CSV for offline analysis |
@@ -245,6 +246,8 @@ python scripts/forecasting/evaluation/utils/download_ltsf.py \
 - [x] **Training monitoring** — health reports, sparklines, TensorBoard
 - [x] **Distributed benchmark** — multi-GPU WQL/MASE evaluation during training
 - [x] **Validation infrastructure** — metric-encoded checkpoints, JSON/CSV reports, resume-safe state
+- [x] **Benchmark suite** — GIFT-Eval, fev-bench, LTSF adapters integrated with unified CLI
+- [x] **Evaluation optimization** — vectorized numpy metrics, GPU-first inference, GluonTS bypass
 - [ ] **Data generation** — TSI, TCM generators, multivariatizers
 - [ ] **Classification task** — time series classification framework
 - [ ] **Anomaly detection task** — time series anomaly detection framework

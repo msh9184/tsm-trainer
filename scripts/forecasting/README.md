@@ -274,6 +274,8 @@ python evaluation/run_benchmark.py \
 | **Win Rate** | Aggregate | fev-bench | Fraction of tasks beating baseline (ties=0.5) |
 | **Skill Score** | Aggregate | fev-bench | 1 - gmean(clipped relative errors) |
 
+All metrics are computed via **vectorized numpy** (`MetricRegistry.compute_*_fast()` functions), bypassing GluonTS Python-level iteration for ~100x faster metric computation on large datasets.
+
 ### Lite Benchmark Datasets
 
 | Dataset | Domain | Prediction Length |
@@ -644,9 +646,9 @@ scripts/forecasting/
 │   ├── run_benchmark.py         # Unified benchmark CLI
 │   ├── compare_models.py        # Model comparison tables
 │   ├── engine/                  # Core evaluation engine
-│   │   ├── metrics.py           #   WQL, MASE, SQL, CRPS, ...
-│   │   ├── forecaster.py        #   BaseForecaster + model adapters
-│   │   ├── evaluator.py         #   Unified evaluation loop
+│   │   ├── metrics.py           #   WQL, MASE, SQL, CRPS + fast vectorized batch
+│   │   ├── forecaster.py        #   BaseForecaster + model adapters (inference_mode)
+│   │   ├── evaluator.py         #   Batch GPU inference → fast numpy metrics
 │   │   ├── distributed.py       #   Multi-GPU evaluation utilities
 │   │   └── aggregator.py        #   gmean, bootstrap CI, win rate
 │   ├── benchmarks/              # Pluggable benchmark adapters

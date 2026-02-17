@@ -593,12 +593,14 @@ scripts/forecasting/evaluation/
 │
 ├── engine/                       # Core evaluation infrastructure
 │   ├── metrics.py                #   MetricRegistry (WQL, MASE, SQL, CRPS, ...)
+│   │                             #     + compute_chronos_metrics_fast()
+│   │                             #     + compute_gift_eval_metrics_fast()
 │   ├── forecaster.py             #   BaseForecaster ABC + model adapters
-│   │                             #     ├── Chronos2Forecaster
-│   │                             #     ├── ChronosBoltForecaster
-│   │                             #     └── TrainingModelForecaster
+│   │                             #     ├── Chronos2Forecaster (inference_mode)
+│   │                             #     ├── ChronosBoltForecaster (inference_mode)
+│   │                             #     └── TrainingModelForecaster (inference_mode)
 │   ├── evaluator.py              #   Unified evaluation loop
-│   │                             #     dataset → forecast → metrics
+│   │                             #     dataset → batch GPU inference → fast metrics
 │   └── aggregator.py             #   Result aggregation
 │                                 #     gmean, bootstrap CI, win rate, skill score
 │
@@ -641,6 +643,38 @@ scripts/forecasting/evaluation/
 - **Shape contract**: `BaseForecaster.predict_quantiles()` returns `(N, Q, H)`. Assertions enforce this at every stage.
 - **Pluggable adapters**: Each benchmark is an independent adapter implementing `BenchmarkAdapter`. Adding a new benchmark = one new file.
 - **hf_repo optional**: Dataset configs no longer require `hf_repo`; `datasets_root` resolves all local paths.
+- **GPU-first inference**: `torch.inference_mode()` for all model forward passes (faster than `torch.no_grad()`).
+- **Vectorized metrics**: All metric computation uses direct numpy operations, bypassing GluonTS Python-level iteration.
+
+### Performance Optimization
+
+The evaluation pipeline uses a **fast vectorized computation path** that bypasses GluonTS `evaluate_model()` / `evaluate_forecasts()` entirely. This eliminates the primary CPU bottleneck observed during large-scale evaluation (3000%+ CPU utilization with 0% GPU).
+
+#### Problem
+
+GluonTS evaluation creates `QuantileForecast` Python objects per series, then iterates over them in Python loops to compute metrics. For datasets with thousands of series (e.g., Electricity: 5,261 series × 7 rolling windows = 36,827 items), this creates tens of thousands of Python objects and per-item metric calls, causing CPU-bound numpy BLAS operations to dominate runtime while the GPU sits idle.
+
+#### Solution
+
+| Component | Before | After | Speedup |
+|-----------|--------|-------|---------|
+| **Chronos metrics** | GluonTS `evaluate_forecasts()` + QuantileForecast | `MetricRegistry.compute_chronos_metrics_fast()` — vectorized numpy | ~100x |
+| **GIFT-Eval metrics** | GluonTS `evaluate_model()` + 11 metric evaluators | `MetricRegistry.compute_gift_eval_metrics_fast()` — all 11 metrics vectorized | ~100x |
+| **Inference context** | `torch.no_grad()` | `torch.inference_mode()` — disables view tracking & version counting | ~10-20% |
+| **LTSF tensor creation** | Nested Python loop (27K+ `torch.tensor()` calls) | `np.ascontiguousarray().reshape()` + `torch.from_numpy()` | ~50x |
+| **GIFT-Eval data loading** | Double `Dataset()` load per task | Single `Dataset(to_univariate=True)` load | 2x |
+
+#### Fast Metric Functions
+
+**`MetricRegistry.compute_chronos_metrics_fast()`** — Computes WQL + MASE matching GluonTS output:
+- Input: `y_pred_quantiles (N, Q, H)`, `y_true (N, H)`, `y_past [list of 1D arrays]`
+- WQL: per-item normalized quantile loss, then mean (matches `MeanWeightedSumQuantileLoss`)
+- MASE: seasonal naive scale, NaN-safe for constant/short series
+
+**`MetricRegistry.compute_gift_eval_metrics_fast()`** — Computes all 11 GIFT-Eval metrics:
+- CRPS, MASE, sMAPE, MAPE, MSE, MAE, RMSE, NRMSE, ND, MSIS, MSE[mean]
+- Output keys match GluonTS column names for report compatibility
+- Uses `float64` precision for numerical stability
 
 ---
 
