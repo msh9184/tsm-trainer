@@ -81,6 +81,178 @@ GIFT_EVAL_DATASETS = [
     "bizitobs_l2c/5T", "bizitobs_l2c/H",
 ]
 
+# ── Metric display infrastructure ──────────────────────────────────────────
+# Ordered metric columns for GIFT-Eval reporting.
+# Each entry: (list_of_column_name_candidates, display_name)
+# The 11 metrics match the official GIFT-Eval leaderboard.
+_METRIC_COLUMNS = [
+    (["eval_metrics/mean_weighted_sum_quantile_loss", "mean_weighted_sum_quantile_loss"], "CRPS"),
+    (["eval_metrics/MASE[0.5]", "MASE[0.5]"], "MASE"),
+    (["eval_metrics/sMAPE[0.5]", "sMAPE[0.5]"], "sMAPE"),
+    (["eval_metrics/MAPE[0.5]", "MAPE[0.5]"], "MAPE"),
+    (["eval_metrics/MSE[0.5]", "MSE[0.5]"], "MSE"),
+    (["eval_metrics/MAE[0.5]", "MAE[0.5]"], "MAE"),
+    (["eval_metrics/RMSE[0.5]", "RMSE[0.5]"], "RMSE"),
+    (["eval_metrics/NRMSE[0.5]", "NRMSE[0.5]"], "NRMSE"),
+    (["eval_metrics/ND[0.5]", "ND[0.5]"], "ND"),
+    (["eval_metrics/MSIS", "MSIS"], "MSIS"),
+    (["eval_metrics/MSE[mean]", "MSE[mean]"], "MSE*"),
+]
+
+
+def _fmt_metric(value: float) -> str:
+    """Format a metric value with adaptive precision (right-aligned, 8 chars)."""
+    abs_val = abs(value)
+    if abs_val == 0:
+        return "  0.0000"
+    if abs_val >= 1000:
+        return f"{value:>8.1f}"
+    if abs_val >= 100:
+        return f"{value:>8.2f}"
+    if abs_val >= 10:
+        return f"{value:>8.3f}"
+    return f"{value:>8.4f}"
+
+
+def _extract_metrics(row: dict) -> list[tuple[str, float | None]]:
+    """Extract ordered metric values from a GIFT-Eval result row."""
+    result = []
+    for candidates, name in _METRIC_COLUMNS:
+        val = None
+        for key in candidates:
+            if key in row and row[key] is not None:
+                try:
+                    val = float(row[key])
+                except (ValueError, TypeError):
+                    pass
+                break
+        result.append((name, val))
+    return result
+
+
+def _format_task_report(
+    row: dict,
+    idx: int,
+    n_total: int,
+    ds_name: str,
+    term: str,
+    domain: str,
+    elapsed: float,
+) -> str:
+    """Format per-task GIFT-Eval metrics as a clean multi-line log block.
+
+    Example::
+
+      ─── [01/97] electricity/15T/short ──────────── Energy │ 12.3s ───
+        CRPS   0.0234 │ MASE   0.8912 │ sMAPE  0.1045 │ MAPE   0.0891
+        MSE    0.0123 │ MAE    0.0567 │ RMSE   0.1234 │ NRMSE  0.0456
+        ND     0.0678 │ MSIS   1.2345 │ MSE*   0.0145
+    """
+    metrics = _extract_metrics(row)
+    valid = [(n, v) for n, v in metrics if v is not None]
+
+    # Header with task info
+    idx_w = len(str(n_total))
+    label = f"{ds_name}/{term}"
+    left = f"─── [{idx:0{idx_w}d}/{n_total}] {label} "
+    right = f" {domain} │ {elapsed:.1f}s ───"
+    W = 75
+    pad = max(0, W - len(left) - len(right))
+    header = left + "─" * pad + right
+
+    # Metric lines (4 per line, pipe-separated)
+    lines = [header]
+    for start in range(0, len(valid), 4):
+        chunk = valid[start : start + 4]
+        parts = [f"{name:<5s}{_fmt_metric(val)}" for name, val in chunk]
+        lines.append("  " + " │ ".join(parts))
+
+    return "\n".join(lines)
+
+
+def _format_eval_summary(results: list[dict], total_elapsed: float) -> str:
+    """Build a comprehensive summary box for GIFT-Eval evaluation results.
+
+    Displays average metrics across all tasks and per-domain CRPS breakdown.
+    """
+    n = len(results)
+    if n == 0:
+        return ""
+
+    # Compute average for each metric
+    metric_avgs: list[tuple[str, float | None, int]] = []
+    for candidates, name in _METRIC_COLUMNS:
+        vals = []
+        for r in results:
+            for key in candidates:
+                if key in r and r[key] is not None:
+                    try:
+                        vals.append(float(r[key]))
+                    except (ValueError, TypeError):
+                        pass
+                    break
+        avg = sum(vals) / len(vals) if vals else None
+        metric_avgs.append((name, avg, len(vals)))
+
+    # Format elapsed time
+    h, rem = divmod(int(total_elapsed), 3600)
+    m, s = divmod(rem, 60)
+    if h > 0:
+        time_str = f"{h}h {m:02d}m {s:02d}s"
+    elif m > 0:
+        time_str = f"{m}m {s:02d}s"
+    else:
+        time_str = f"{s}s"
+
+    W = 75
+    sep = "═" * W
+
+    lines = [
+        f"╔{sep}╗",
+        f"║{'GIFT-Eval Evaluation Complete':^{W}}║",
+        f"║{f'{n} tasks │ {time_str}':^{W}}║",
+        f"╠{sep}╣",
+        f"║{' Average Metrics (across all tasks)':<{W}}║",
+    ]
+
+    # Metric averages (4 per line)
+    valid_avgs = [(name, avg) for name, avg, _ in metric_avgs if avg is not None]
+    for start in range(0, len(valid_avgs), 4):
+        chunk = valid_avgs[start : start + 4]
+        parts = [f"{name:<5s}{_fmt_metric(val)}" for name, val in chunk]
+        content = "   " + " │ ".join(parts)
+        lines.append(f"║{content:<{W}}║")
+
+    # Per-domain CRPS breakdown
+    crps_keys = _METRIC_COLUMNS[0][0]  # CRPS column candidates
+    domain_data: dict[str, list[float]] = {}
+    for r in results:
+        domain = r.get("domain", "Other")
+        for key in crps_keys:
+            if key in r and r[key] is not None:
+                try:
+                    domain_data.setdefault(domain, []).append(float(r[key]))
+                except (ValueError, TypeError):
+                    pass
+                break
+
+    if domain_data:
+        lines.append(f"╠{sep}╣")
+        lines.append(f"║{' Per-Domain CRPS':<{W}}║")
+        # Sort by average CRPS (best first)
+        sorted_domains = sorted(
+            domain_data.items(),
+            key=lambda x: sum(x[1]) / len(x[1]),
+        )
+        for dom, vals in sorted_domains:
+            avg = sum(vals) / len(vals)
+            entry = f"   {dom:<16s}{avg:>8.4f}  ({len(vals):>2d} tasks)"
+            lines.append(f"║{entry:<{W}}║")
+
+    lines.append(f"╚{sep}╝")
+    return "\n".join(lines)
+
+
 # Datasets with sub-daily frequency that support medium/long terms
 GIFT_EVAL_MED_LONG_DATASETS = [
     "electricity/15T", "electricity/H",
@@ -381,6 +553,8 @@ class GiftEvalAdapter(BenchmarkAdapter):
             module=r"(gluonts|gift_eval)",
         )
 
+        eval_start = time.time()
+
         for idx, (ds_name, term) in enumerate(task_configs, 1):
             task_start = time.time()
 
@@ -438,21 +612,20 @@ class GiftEvalAdapter(BenchmarkAdapter):
 
                 results.append(row)
 
-                # Log progress
-                crps = row.get(
-                    "eval_metrics/mean_weighted_sum_quantile_loss",
-                    row.get("mean_weighted_sum_quantile_loss", "N/A"),
-                )
-                crps_str = f"{crps:.4f}" if isinstance(crps, (int, float)) else str(crps)
+                # Log all 11 metrics for this task
                 logger.info(
-                    f"  [{idx}/{n_total}] {ds_name}/{term}: "
-                    f"CRPS={crps_str}, {elapsed:.1f}s"
+                    _format_task_report(
+                        row, idx, n_total, ds_name, term,
+                        row.get("domain", "Other"), elapsed,
+                    )
                 )
 
             except Exception as e:
                 elapsed = time.time() - task_start
+                idx_w = len(str(n_total))
                 logger.warning(
-                    f"  [{idx}/{n_total}] {ds_name}/{term}: FAILED — {e}"
+                    f"─── [{idx:0{idx_w}d}/{n_total}] {ds_name}/{term} "
+                    f"─── FAILED │ {elapsed:.1f}s ───\n  {e}"
                 )
                 results.append({
                     "dataset": f"{ds_name}/{term}" if "/" not in ds_name else f"{ds_name}/{term}",
@@ -463,6 +636,12 @@ class GiftEvalAdapter(BenchmarkAdapter):
 
         # Restore gluonts.model.forecast logger level
         _gluonts_forecast_logger.setLevel(_prev_level)
+
+        # Log comprehensive evaluation summary
+        total_elapsed = time.time() - eval_start
+        summary_text = _format_eval_summary(results, total_elapsed)
+        if summary_text:
+            logger.info(f"\n{summary_text}")
 
         return pd.DataFrame(results)
 
