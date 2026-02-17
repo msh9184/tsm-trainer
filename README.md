@@ -193,7 +193,8 @@ For GPU servers with network restrictions:
 ```bash
 # Pre-download evaluation datasets
 HTTPS_PROXY=http://proxy:8080 python scripts/forecasting/evaluation/download_eval_datasets.py \
-    --config scripts/forecasting/evaluation/configs/lite-benchmark.yaml
+    --config scripts/forecasting/evaluation/configs/chronos-full.yaml \
+    --output-dir /group-volume/ts-dataset/benchmarks/chronos/
 
 # Set HuggingFace cache directory
 export HF_HOME=/group-volume/hf_cache

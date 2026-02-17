@@ -63,9 +63,9 @@ class EnhancedBenchmarkCallback:
     Parameters
     ----------
     tier1_config : str
-        Path to Tier 1 benchmark YAML (lite-benchmark.yaml, 5 datasets).
+        Path to Tier 1 benchmark YAML (chronos-lite.yaml, 5 datasets).
     tier2_config : str, optional
-        Path to Tier 2 benchmark YAML (extended-benchmark.yaml, 15 datasets).
+        Path to Tier 2 benchmark YAML (chronos-extended.yaml, 15 datasets).
     tier1_eval_steps : int
         Steps between Tier 1 evaluations.
     tier2_eval_steps : int

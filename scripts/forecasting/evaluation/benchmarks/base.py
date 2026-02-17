@@ -5,7 +5,7 @@ data format, evaluation protocol, and aggregation method. The BenchmarkAdapter
 ABC provides a unified interface for all benchmarks.
 
 Usage:
-    adapter = ChronosBenchmarkAdapter(config_path="configs/zero-shot.yaml")
+    adapter = ChronosBenchmarkAdapter(config_path="configs/chronos-ii.yaml")
     results = adapter.evaluate(forecaster)
     summary = adapter.aggregate(results)
 """

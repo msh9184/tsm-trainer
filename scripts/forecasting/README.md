@@ -142,7 +142,7 @@ bash training/train.sh --config configs/chronos2-base-stage2.yaml
 From a pretrained model (e.g., `amazon/chronos-2`):
 
 ```bash
-bash training/train.sh --config configs/chronos2-finetune.yaml
+bash training/train.sh --config configs/chronos2-base-finetune.yaml
 ```
 
 ```yaml
@@ -213,16 +213,18 @@ KernelSynth composes 1–5 random kernels (periodic, RBF, trend, noise) via `+`/
 ```bash
 # Lite benchmark (5 datasets)
 python evaluation/download_eval_datasets.py \
-    --config evaluation/configs/lite-benchmark.yaml
+    --config evaluation/configs/chronos-lite.yaml \
+    --output-dir /group-volume/ts-dataset/benchmarks/chronos/
 
-# Full zero-shot benchmark (27 datasets)
-HTTPS_PROXY=http://proxy:8080 python evaluation/download_eval_datasets.py \
-    --config evaluation/configs/zero-shot.yaml
-
-# Custom cache directory
+# All Chronos datasets (42 datasets)
 python evaluation/download_eval_datasets.py \
-    --config evaluation/configs/lite-benchmark.yaml \
-    --cache-dir /group-volume/hf_cache
+    --config evaluation/configs/chronos-full.yaml \
+    --output-dir /group-volume/ts-dataset/benchmarks/chronos/
+
+# With proxy (for restricted networks)
+HTTPS_PROXY=http://proxy:8080 python evaluation/download_eval_datasets.py \
+    --config evaluation/configs/chronos-ii.yaml \
+    --output-dir /group-volume/ts-dataset/benchmarks/chronos/
 ```
 
 ### Validate Datasets
@@ -240,21 +242,22 @@ python validate_datasets.py --count-all        # Count series (slow)
 ### Standalone Evaluation
 
 ```bash
-python evaluation/evaluate.py \
-    evaluation/configs/zero-shot.yaml \
-    results/my-model-zero-shot.csv \
-    --chronos-model-id ./output/chronos2-base-stage1/final-checkpoint \
-    --device cuda:0 \
-    --batch-size 32
+python evaluation/run_benchmark.py \
+    --model-path ./output/chronos2-base-stage1/final-checkpoint \
+    --benchmarks chronos_lite \
+    --datasets-root /group-volume/ts-dataset/benchmarks/chronos/ \
+    --device cuda --batch-size 32
 ```
 
 ### Benchmark Configs
 
 | Config | Datasets | Purpose |
 |--------|----------|---------|
-| `lite-benchmark.yaml` | 5 | Quick check during training (~3 min) |
-| `zero-shot.yaml` | 27 | Unseen datasets (ETT, Traffic, COVID, Tourism, ...) |
-| `in-domain.yaml` | 15 | Datasets from the training corpus |
+| `chronos-lite.yaml` | 5 | Quick validation during training (~3 min) |
+| `chronos-extended.yaml` | 15 | Thorough validation (~15 min) |
+| `chronos-i.yaml` | 15 | Chronos Bench I, in-domain (paper) |
+| `chronos-ii.yaml` | 27 | Chronos Bench II, zero-shot (paper) |
+| `chronos-full.yaml` | 42 | All Chronos datasets (I + II combined) |
 
 ### Lite Benchmark Datasets
 
@@ -273,13 +276,18 @@ python evaluation/evaluate.py \
 
 ### Training-Time Evaluation
 
-When `benchmark_config` is set in the training YAML, the **LiteBenchmarkCallback** runs evaluation every N steps:
+When `benchmark_config` is set in the training YAML, the **EnhancedBenchmarkCallback** runs evaluation every N steps:
 
 ```yaml
-benchmark_config: "configs/lite-benchmark.yaml"
-benchmark_eval_steps: 10000
+benchmark_config: "configs/chronos-lite.yaml"
+benchmark_eval_steps: 200
 benchmark_top_k_checkpoints: 3
 benchmark_batch_size: 32
+benchmark_checkpoint_metric: "composite"
+benchmark_composite_weights:
+  wql: 0.6
+  mase: 0.4
+benchmark_datasets_root: "/group-volume/ts-dataset/benchmarks/chronos"
 ```
 
 Results are logged to TensorBoard under `benchmark/avg_wql`, `benchmark/avg_mase`, and per-dataset tags.
@@ -396,7 +404,7 @@ Printed once at the start of training:
 ║  └─────────────────────────────────────────────────────────────────┘ ║
 ║  ┌─ Monitoring ────────────────────────────────────────────────────┐ ║
 ║  │  Health reports: every 1000 steps                               │ ║
-║  │  Benchmark:      every 10000 steps (lite-benchmark.yaml)        │ ║
+║  │  Benchmark:      every 200 steps (chronos-lite.yaml)            │ ║
 ║  │  Top-K ckpts:    3 (by WQL)                                     │ ║
 ║  │  Output dir:     ./output/chronos2-base-stage1                  │ ║
 ║  └─────────────────────────────────────────────────────────────────┘ ║
@@ -501,11 +509,12 @@ save_total_limit: 3
 report_to: "tensorboard"
 health_report_interval: 1000
 
-# Lite benchmark (optional)
-benchmark_config: "configs/lite-benchmark.yaml"
-benchmark_eval_steps: 10_000
+# Benchmark evaluation (optional)
+benchmark_config: "configs/chronos-lite.yaml"
+benchmark_eval_steps: 200
 benchmark_top_k_checkpoints: 3
 benchmark_batch_size: 32
+benchmark_datasets_root: "/group-volume/ts-dataset/benchmarks/chronos"
 ```
 
 ---
@@ -565,7 +574,7 @@ scripts/forecasting/
 │       ├── chronos2-base.yaml          # 120M Stage 1 (2048 ctx)
 │       ├── chronos2-base-stage2.yaml   # 120M Stage 2 (8192 ctx)
 │       ├── chronos2-small.yaml         # 28M pretraining
-│       ├── chronos2-finetune.yaml      # Fine-tune from pretrained
+│       ├── chronos2-base-finetune.yaml # Fine-tune from pretrained
 │       ├── chronos-t5-*.yaml           # Original Chronos configs
 │       └── chronos-gpt2.yaml
 ├── evaluation/
@@ -573,9 +582,13 @@ scripts/forecasting/
 │   ├── download_eval_datasets.py # Offline dataset downloader
 │   ├── agg-relative-score.py    # Aggregate relative scoring
 │   ├── configs/
-│   │   ├── lite-benchmark.yaml  # 5 datasets (training-time eval)
-│   │   ├── zero-shot.yaml       # 27 unseen datasets
-│   │   └── in-domain.yaml       # 15 in-training datasets
+│   │   ├── chronos-lite.yaml    # 5 datasets (quick validation)
+│   │   ├── chronos-extended.yaml # 15 datasets (thorough validation)
+│   │   ├── chronos-i.yaml       # 15 in-domain datasets (paper)
+│   │   ├── chronos-ii.yaml      # 27 zero-shot datasets (paper)
+│   │   ├── chronos-full.yaml    # 42 all Chronos datasets
+│   │   ├── gift-eval.yaml       # GIFT-Eval benchmark
+│   │   └── fev-bench.yaml       # FEV-Bench benchmark
 │   └── results/                 # Pre-computed baseline results
 ├── kernel-synth.py              # KernelSynth GP data generator
 └── validate_datasets.py         # Dataset integrity checker

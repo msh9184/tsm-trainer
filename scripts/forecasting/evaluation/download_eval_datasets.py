@@ -7,25 +7,22 @@ for offline evaluation on network-restricted GPU servers.
 Usage:
     # Download lite benchmark datasets
     python download_eval_datasets.py \
-        --config configs/lite-benchmark.yaml \
+        --config configs/chronos-lite.yaml \
         --output-dir /path/to/benchmarks/chronos/
 
     # Download all Chronos Benchmark II (zero-shot) datasets
     python download_eval_datasets.py \
-        --config configs/zero-shot.yaml \
+        --config configs/chronos-ii.yaml \
         --output-dir /path/to/benchmarks/chronos/
 
-    # Download ALL benchmark datasets at once
+    # Download ALL Chronos benchmark datasets at once
     python download_eval_datasets.py \
-        --config configs/lite-benchmark.yaml \
-                 configs/extended-benchmark.yaml \
-                 configs/zero-shot.yaml \
-                 configs/in-domain.yaml \
+        --config configs/chronos-full.yaml \
         --output-dir /path/to/benchmarks/chronos/
 
     # Dry run (show what would be downloaded)
     python download_eval_datasets.py \
-        --config configs/zero-shot.yaml \
+        --config configs/chronos-ii.yaml \
         --output-dir /path/to/benchmarks/chronos/ \
         --dry-run
 
@@ -69,7 +66,7 @@ def download_and_save(
         logger.info(f"  SKIP (exists): {name} → {save_path}")
         return True
 
-    trust_remote_code = hf_repo == "autogluon/chronos_datasets_extra"
+    trust_remote_code = hf_repo in ("autogluon/chronos_datasets_extra",)
     kwargs = {}
     if cache_dir:
         kwargs["cache_dir"] = cache_dir
@@ -184,7 +181,8 @@ def main():
         for ds in all_datasets:
             target = output_dir / ds["name"]
             status = "EXISTS" if target.exists() else "MISSING"
-            logger.info(f"  [{status}] {ds['hf_repo']}/{ds['name']} → {target}")
+            hf_repo = ds.get('hf_repo', 'autogluon/chronos_datasets')
+            logger.info(f"  [{status}] {hf_repo}/{ds['name']} → {target}")
         return
 
     # Download
@@ -197,7 +195,7 @@ def main():
 
     for config in all_datasets:
         name = config["name"]
-        hf_repo = config["hf_repo"]
+        hf_repo = config.get("hf_repo", "autogluon/chronos_datasets")
 
         save_path = output_dir / name
         if save_path.exists() and not args.overwrite:

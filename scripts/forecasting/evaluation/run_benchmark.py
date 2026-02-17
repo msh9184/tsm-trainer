@@ -65,6 +65,17 @@ sys.path.insert(0, str(SCRIPT_DIR))
 if SRC_DIR.exists():
     sys.path.insert(0, str(SRC_DIR))
 
+# Single source of truth for benchmark → config file mapping
+BENCHMARK_CONFIG_MAP = {
+    "chronos_i": "chronos-i.yaml",
+    "chronos_ii": "chronos-ii.yaml",
+    "chronos_lite": "chronos-lite.yaml",
+    "lite": "chronos-lite.yaml",            # backward-compatible alias
+    "chronos_extended": "chronos-extended.yaml",
+    "extended": "chronos-extended.yaml",     # backward-compatible alias
+    "chronos_full": "chronos-full.yaml",
+}
+
 
 # ---------------------------------------------------------------------------
 # Environment & system info
@@ -371,17 +382,8 @@ def run_benchmarks(args):
     # Pre-validate benchmark configs
     from engine.evaluator import validate_config
     configs_dir = SCRIPT_DIR / "configs"
-    config_map = {
-        "chronos_ii": "chronos-ii.yaml",
-        "chronos_i": "chronos-i.yaml",
-        "lite": "chronos-lite.yaml",
-        "chronos_lite": "chronos-lite.yaml",
-        "extended": "chronos-extended.yaml",
-        "chronos_extended": "chronos-extended.yaml",
-        "chronos_full": "chronos-full.yaml",
-    }
     for benchmark_name in args.benchmarks:
-        config_file = config_map.get(benchmark_name)
+        config_file = BENCHMARK_CONFIG_MAP.get(benchmark_name)
         if config_file:
             config_path = configs_dir / config_file
             errors = validate_config(config_path)
@@ -456,13 +458,7 @@ def run_benchmarks(args):
         logger.info("Pre-validating datasets...")
         all_valid = True
         for benchmark_name in args.benchmarks:
-            config_map = {
-                "chronos_ii": "zero-shot.yaml",
-                "chronos_i": "in-domain.yaml",
-                "lite": "lite-benchmark.yaml",
-                "extended": "extended-benchmark.yaml",
-            }
-            config_file = config_map.get(benchmark_name)
+            config_file = BENCHMARK_CONFIG_MAP.get(benchmark_name)
             if config_file:
                 config_path = SCRIPT_DIR / "configs" / config_file
                 if config_path.exists():
@@ -517,13 +513,7 @@ def run_benchmarks(args):
                     batch_size=args.batch_size,
                     datasets_root=args.datasets_root,
                 )
-                config_map = {
-                    "chronos_ii": "zero-shot.yaml",
-                    "chronos_i": "in-domain.yaml",
-                    "lite": "lite-benchmark.yaml",
-                    "extended": "extended-benchmark.yaml",
-                }
-                config_file = config_map.get(benchmark_name)
+                config_file = BENCHMARK_CONFIG_MAP.get(benchmark_name)
                 if config_file:
                     cfg_path = SCRIPT_DIR / "configs" / config_file
                     results = evaluator.evaluate_benchmark(
@@ -1090,13 +1080,7 @@ def run_dry_run(args):
         logger.info("")
         logger.info(f"  --- Benchmark: {benchmark_name} ---")
 
-        config_map = {
-            "chronos_ii": "zero-shot.yaml",
-            "chronos_i": "in-domain.yaml",
-            "lite": "lite-benchmark.yaml",
-            "extended": "extended-benchmark.yaml",
-        }
-        config_file = config_map.get(benchmark_name)
+        config_file = BENCHMARK_CONFIG_MAP.get(benchmark_name)
         if not config_file:
             logger.info(f"    (external benchmark, skipping dataset check)")
             continue

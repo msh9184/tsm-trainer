@@ -38,7 +38,7 @@ class ChronosBenchmarkAdapter(BenchmarkAdapter):
     Parameters
     ----------
     config_path : str or Path
-        Path to benchmark YAML config (e.g., zero-shot.yaml, in-domain.yaml).
+        Path to benchmark YAML config (e.g., chronos-ii.yaml, chronos-i.yaml).
     benchmark_type : str
         "in-domain" or "zero-shot". Used for naming and aggregation.
     baseline_results_path : str or Path, optional
@@ -173,7 +173,7 @@ class ChronosLiteBenchmarkAdapter(BenchmarkAdapter):
         batch_size: int = 32,
     ):
         if config_path is None:
-            config_path = Path(__file__).parent.parent / "configs" / "lite-benchmark.yaml"
+            config_path = Path(__file__).parent.parent / "configs" / "chronos-lite.yaml"
         self._config_path = Path(config_path)
         self._datasets_root = datasets_root
         self._batch_size = batch_size
