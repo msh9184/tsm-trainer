@@ -333,11 +333,18 @@ class TrainingModelForecaster(BaseForecaster):
         self._model = model
         self._device = device
 
+        # Unwrap FSDP/DDP for config access; forward passes still go through wrapper
+        inner_model = model
+        while hasattr(inner_model, "_fsdp_wrapped_module"):
+            inner_model = inner_model._fsdp_wrapped_module
+        while hasattr(inner_model, "module"):
+            inner_model = inner_model.module
+
         # Build a temporary pipeline wrapper
         self._pipeline = Chronos2Pipeline.__new__(Chronos2Pipeline)
-        self._pipeline.model = model
+        self._pipeline.model = model  # Keep wrapper for forward() (FSDP collectives)
         self._pipeline.device = device
-        self._pipeline.chronos_config = model.chronos_config
+        self._pipeline.chronos_config = inner_model.chronos_config
 
     @property
     def name(self) -> str:

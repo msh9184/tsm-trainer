@@ -10,7 +10,7 @@ Features:
 - Composite checkpoint metric: Weighted WQL + MASE
 - Per-dataset TensorBoard logging under benchmark/
 - Top-K checkpoint management by configurable metric
-- Distributed training support (rank-0 only evaluation)
+- Distributed evaluation: ALL ranks participate in forward passes (FSDP-compatible)
 - Evaluation timeout to prevent training hangs
 - Uses shared evaluation engine (no code duplication)
 
@@ -18,7 +18,7 @@ Usage in training config YAML:
     benchmark_config: configs/chronos-lite.yaml
     benchmark_eval_steps: 200
     benchmark_top_k_checkpoints: 3
-    benchmark_batch_size: 32
+    benchmark_batch_size: 256
     benchmark_checkpoint_metric: composite  # "wql" | "mase" | "composite"
     benchmark_composite_weights:
       wql: 0.6
@@ -171,94 +171,174 @@ class EnhancedBenchmarkCallback(TrainerCallback):
         args,
         state,
     ):
-        """Run benchmark evaluation for a given tier."""
-        if is_main_process():
-            tier_label = "LITE (Tier 1)" if tier == "tier1" else "EXTENDED (Tier 2)"
+        """Dispatch benchmark evaluation: distributed (multi-GPU) or single-GPU."""
+        if dist.is_initialized() and dist.get_world_size() > 1:
+            self._run_evaluation_distributed(model, config_path, tier, step, args, state)
+        else:
+            self._run_evaluation_single(model, config_path, tier, step, args, state)
+
+    def _run_evaluation_single(
+        self,
+        model,
+        config_path: str,
+        tier: str,
+        step: int,
+        args,
+        state,
+    ):
+        """Original rank-0-only evaluation path for single-GPU training."""
+        tier_label = "LITE (Tier 1)" if tier == "tier1" else "EXTENDED (Tier 2)"
+        logger.info(f"\n{'─' * 72}")
+        logger.info(f"  BENCHMARK EVALUATION — {tier_label} — Step {step:,}")
+        logger.info(f"{'─' * 72}")
+
+        model.eval()
+        device = next(model.parameters()).device
+
+        eval_start = time.time()
+        try:
+            results = self._evaluate_benchmark_single(
+                model=model,
+                config_path=config_path,
+                device=device,
+            )
+
+            eval_elapsed = time.time() - eval_start
+            results["step"] = step
+            results["tier"] = tier
+            results["elapsed_seconds"] = round(eval_elapsed, 1)
+
+            self._log_results(results, tier, tier_label, step, eval_elapsed, args)
+
+        except Exception as e:
+            eval_elapsed = time.time() - eval_start
+            logger.error(f"  Benchmark evaluation failed after {eval_elapsed:.1f}s: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+        finally:
+            model.train()
+
+        logger.info(f"{'─' * 72}\n")
+
+    def _run_evaluation_distributed(
+        self,
+        model,
+        config_path: str,
+        tier: str,
+        step: int,
+        args,
+        state,
+    ):
+        """Distributed evaluation: ALL ranks participate in forward passes.
+
+        Series are sharded across ranks via round-robin. All ranks call
+        model.forward() the same number of times (required by FSDP).
+        Predictions are gathered to rank-0 for metric computation.
+        """
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
+        tier_label = "LITE (Tier 1)" if tier == "tier1" else "EXTENDED (Tier 2)"
+
+        if rank == 0:
             logger.info(f"\n{'─' * 72}")
-            logger.info(f"  BENCHMARK EVALUATION — {tier_label} — Step {step:,}")
+            logger.info(
+                f"  BENCHMARK EVALUATION — {tier_label} — Step {step:,} "
+                f"(distributed: {world_size} GPUs)"
+            )
             logger.info(f"{'─' * 72}")
 
-            model.eval()
-            device = next(model.parameters()).device
+        model.eval()
+        device = next(model.parameters()).device
 
-            eval_start = time.time()
-            try:
-                results = self._evaluate_benchmark(
-                    model=model,
-                    config_path=config_path,
-                    device=device,
-                )
+        eval_start = time.time()
+        try:
+            results = self._evaluate_benchmark_distributed(
+                model=model,
+                config_path=config_path,
+                device=device,
+                rank=rank,
+                world_size=world_size,
+            )
 
-                eval_elapsed = time.time() - eval_start
+            eval_elapsed = time.time() - eval_start
 
-                # Check timeout
-                if self._eval_timeout > 0 and eval_elapsed > self._eval_timeout:
-                    logger.warning(
-                        f"  Evaluation took {eval_elapsed:.0f}s "
-                        f"(timeout={self._eval_timeout:.0f}s)"
-                    )
-
+            # Only rank-0 handles logging, checkpointing, and result tracking
+            if rank == 0 and results is not None:
                 results["step"] = step
                 results["tier"] = tier
                 results["elapsed_seconds"] = round(eval_elapsed, 1)
 
-                avg_wql = results.get("avg_wql")
-                avg_mase = results.get("avg_mase")
+                self._log_results(results, tier, tier_label, step, eval_elapsed, args)
 
-                logger.info(f"  ── {tier_label} Results ({eval_elapsed:.1f}s) ──")
-                if avg_wql is not None:
-                    logger.info(f"  Avg WQL:  {avg_wql:.4f}")
-                if avg_mase is not None:
-                    logger.info(f"  Avg MASE: {avg_mase:.4f}")
-
-                # Compute composite score
-                composite = self._compute_checkpoint_score(results)
-                if composite is not None:
-                    logger.info(f"  Composite ({self._checkpoint_metric}): {composite:.4f}")
-
-                # Log per-dataset results
-                for ds_name, ds_m in results.get("per_dataset", {}).items():
-                    wql_str = f"{ds_m['WQL']:.4f}" if isinstance(ds_m.get('WQL'), float) else "error"
-                    mase_str = f"{ds_m['MASE']:.4f}" if isinstance(ds_m.get('MASE'), float) else "error"
-                    logger.info(f"    {ds_name}: WQL={wql_str}, MASE={mase_str}")
-
-                # TensorBoard logging (hierarchical)
-                self._log_to_tensorboard(results, tier, step, args)
-
-                # Update last results (always use latest regardless of tier)
-                self.last_benchmark_results = results
-
-                # Checkpoint management (only on Tier 1 for fast feedback)
-                if tier == "tier1" and composite is not None:
-                    self._manage_checkpoints(composite, step, results, args)
-
-            except Exception as e:
-                eval_elapsed = time.time() - eval_start
+        except Exception as e:
+            eval_elapsed = time.time() - eval_start
+            if rank == 0:
                 logger.error(f"  Benchmark evaluation failed after {eval_elapsed:.1f}s: {e}")
                 import traceback
                 logger.error(traceback.format_exc())
-            finally:
-                model.train()
+        finally:
+            model.train()
 
+        if rank == 0:
             logger.info(f"{'─' * 72}\n")
 
-        # Barrier for distributed training
-        if dist.is_initialized():
-            dist.barrier()
+        # Brief final sync
+        dist.barrier()
 
-    def _evaluate_benchmark(
+    def _log_results(
+        self,
+        results: dict,
+        tier: str,
+        tier_label: str,
+        step: int,
+        eval_elapsed: float,
+        args,
+    ):
+        """Log evaluation results, update state, and manage checkpoints (rank-0 only)."""
+        # Check timeout
+        if self._eval_timeout > 0 and eval_elapsed > self._eval_timeout:
+            logger.warning(
+                f"  Evaluation took {eval_elapsed:.0f}s "
+                f"(timeout={self._eval_timeout:.0f}s)"
+            )
+
+        avg_wql = results.get("avg_wql")
+        avg_mase = results.get("avg_mase")
+
+        logger.info(f"  ── {tier_label} Results ({eval_elapsed:.1f}s) ──")
+        if avg_wql is not None:
+            logger.info(f"  Avg WQL:  {avg_wql:.4f}")
+        if avg_mase is not None:
+            logger.info(f"  Avg MASE: {avg_mase:.4f}")
+
+        # Compute composite score
+        composite = self._compute_checkpoint_score(results)
+        if composite is not None:
+            logger.info(f"  Composite ({self._checkpoint_metric}): {composite:.4f}")
+
+        # Log per-dataset results
+        for ds_name, ds_m in results.get("per_dataset", {}).items():
+            wql_str = f"{ds_m['WQL']:.4f}" if isinstance(ds_m.get('WQL'), float) else "error"
+            mase_str = f"{ds_m['MASE']:.4f}" if isinstance(ds_m.get('MASE'), float) else "error"
+            logger.info(f"    {ds_name}: WQL={wql_str}, MASE={mase_str}")
+
+        # TensorBoard logging
+        self._log_to_tensorboard(results, tier, step, args)
+
+        # Update last results
+        self.last_benchmark_results = results
+
+        # Checkpoint management (only on Tier 1 for fast feedback)
+        if tier == "tier1" and composite is not None:
+            self._manage_checkpoints(composite, step, results, args)
+
+    def _evaluate_benchmark_single(
         self,
         model,
         config_path: str,
         device: torch.device,
     ) -> dict:
-        """Run benchmark evaluation using the shared evaluation engine.
-
-        The evaluation engine (scripts/forecasting/evaluation/engine/) provides
-        all data loading, forecasting, and metric computation. This callback
-        wraps the training model in a TrainingModelForecaster and delegates
-        to the engine's Evaluator.
-        """
+        """Run benchmark evaluation on a single GPU using the shared evaluation engine."""
         if self._engine_available is False:
             raise ImportError("Evaluation engine not available (checked previously)")
 
@@ -284,6 +364,193 @@ class EnhancedBenchmarkCallback(TrainerCallback):
                 f"Ensure scripts/forecasting/evaluation/engine/ is accessible.\n"
                 f"Current sys.path includes: {_EVAL_DIR}"
             ) from e
+
+    def _evaluate_benchmark_distributed(
+        self,
+        model,
+        config_path: str,
+        device: torch.device,
+        rank: int,
+        world_size: int,
+    ) -> dict | None:
+        """Run distributed benchmark evaluation across all ranks.
+
+        All ranks load datasets and participate in forward passes.
+        Only rank-0 computes metrics and returns results.
+
+        Returns
+        -------
+        dict or None
+            Evaluation results on rank-0, None on other ranks.
+        """
+        if self._engine_available is False:
+            raise ImportError("Evaluation engine not available (checked previously)")
+
+        try:
+            import yaml as yaml_loader
+            from engine.forecaster import TrainingModelForecaster
+            from engine.evaluator import (
+                EVAL_QUANTILES,
+                load_dataset_from_config,
+                validate_config,
+            )
+            from engine.distributed import (
+                broadcast_error,
+                generate_forecasts_distributed,
+                gather_forecasts_to_rank0,
+            )
+
+            self._engine_available = True
+        except ImportError as e:
+            self._engine_available = False
+            raise ImportError(
+                f"Evaluation engine not importable: {e}\n"
+                f"Ensure scripts/forecasting/evaluation/engine/ is accessible.\n"
+                f"Current sys.path includes: {_EVAL_DIR}"
+            ) from e
+
+        # Validate config (all ranks — identical local files)
+        config_errors = validate_config(config_path)
+        if config_errors:
+            error_msg = "\n".join(f"  - {e}" for e in config_errors)
+            raise ValueError(
+                f"Benchmark config validation failed:\n{error_msg}"
+            )
+
+        with open(config_path) as f:
+            configs = yaml_loader.safe_load(f)
+
+        forecaster = TrainingModelForecaster(model, device)
+        quantile_levels = EVAL_QUANTILES
+        n_quantiles = len(quantile_levels)
+        per_dataset_results = {}
+
+        for ds_config in configs:
+            ds_name = ds_config["name"]
+            prediction_length = ds_config["prediction_length"]
+
+            # Phase 1: Load dataset on ALL ranks (local disk, fast).
+            # Use error synchronization to prevent NCCL deadlock if any rank fails.
+            load_failed = False
+            test_data = None
+            all_inputs = []
+            n_series = 0
+            pred_len = prediction_length
+
+            try:
+                _, test_data, pred_len, _ = load_dataset_from_config(
+                    ds_config, datasets_root=self._datasets_root
+                )
+                all_inputs = list(test_data.input)
+                n_series = len(all_inputs)
+            except Exception as e:
+                load_failed = True
+                if rank == 0:
+                    logger.warning(f"  Dataset {ds_name} load failed: {e}")
+
+            # Synchronize: if ANY rank failed, ALL ranks skip this dataset.
+            # Without this, succeeding ranks would enter all_reduce while
+            # failing ranks skip it → NCCL deadlock.
+            if broadcast_error(load_failed, device):
+                if rank == 0:
+                    logger.warning(f"  Skipping {ds_name}: load failed on one or more ranks")
+                    per_dataset_results[ds_name] = {
+                        "WQL": float("nan"),
+                        "MASE": float("nan"),
+                    }
+                continue
+
+            # Phase 2: Distributed forecasting (all ranks participate in forward passes)
+            try:
+                local_preds, local_indices = generate_forecasts_distributed(
+                    all_inputs,
+                    forecaster,
+                    prediction_length=pred_len,
+                    quantile_levels=quantile_levels,
+                    batch_size=self._eval_batch_size,
+                    rank=rank,
+                    world_size=world_size,
+                    device=device,
+                )
+
+                # Phase 3: Gather predictions to rank-0
+                all_preds = gather_forecasts_to_rank0(
+                    local_preds, local_indices, n_series, n_quantiles, pred_len,
+                    rank, world_size, device,
+                )
+
+                # Phase 4: Rank-0 computes metrics
+                if rank == 0 and all_preds is not None:
+                    from gluonts.model.forecast import QuantileForecast
+                    from gluonts.ev.metrics import MASE, MeanWeightedSumQuantileLoss
+                    from gluonts.model.evaluation import evaluate_forecasts
+
+                    # Build QuantileForecast objects (use all_inputs, not
+                    # test_data.input, to avoid re-iterating a potential generator)
+                    forecasts = []
+                    for item, ts in zip(all_preds, all_inputs):
+                        forecast_start = ts["start"] + len(ts["target"])
+                        forecasts.append(
+                            QuantileForecast(
+                                forecast_arrays=item,
+                                forecast_keys=list(map(str, quantile_levels)),
+                                start_date=forecast_start,
+                            )
+                        )
+
+                    metrics = (
+                        evaluate_forecasts(
+                            forecasts,
+                            test_data=test_data,
+                            metrics=[
+                                MASE(),
+                                MeanWeightedSumQuantileLoss(quantile_levels),
+                            ],
+                            batch_size=5000,
+                        )
+                        .reset_index(drop=True)
+                        .to_dict(orient="records")
+                    )
+
+                    result = metrics[0]
+                    if "MASE[0.5]" in result:
+                        result["MASE"] = result.pop("MASE[0.5]")
+                    if "mean_weighted_sum_quantile_loss" in result:
+                        result["WQL"] = result.pop("mean_weighted_sum_quantile_loss")
+
+                    per_dataset_results[ds_name] = {
+                        "WQL": result.get("WQL", float("nan")),
+                        "MASE": result.get("MASE", float("nan")),
+                    }
+
+            except Exception as e:
+                if rank == 0:
+                    logger.warning(f"  Dataset {ds_name} evaluation failed: {e}")
+                    per_dataset_results[ds_name] = {
+                        "WQL": float("nan"),
+                        "MASE": float("nan"),
+                    }
+
+        # Rank-0: aggregate results
+        if rank == 0:
+            import numpy as np
+
+            wql_values = [
+                v["WQL"] for v in per_dataset_results.values()
+                if isinstance(v.get("WQL"), float) and not np.isnan(v["WQL"])
+            ]
+            mase_values = [
+                v["MASE"] for v in per_dataset_results.values()
+                if isinstance(v.get("MASE"), float) and not np.isnan(v["MASE"])
+            ]
+
+            return {
+                "avg_wql": float(np.mean(wql_values)) if wql_values else None,
+                "avg_mase": float(np.mean(mase_values)) if mase_values else None,
+                "per_dataset": per_dataset_results,
+            }
+
+        return None
 
     def _compute_checkpoint_score(self, results: dict) -> float | None:
         """Compute the score used for checkpoint ranking.

@@ -111,7 +111,7 @@ health_report_interval: 200
 benchmark_config: "scripts/forecasting/evaluation/configs/chronos-lite.yaml"
 benchmark_eval_steps: 200
 benchmark_top_k_checkpoints: 3
-benchmark_batch_size: 32
+benchmark_batch_size: 256
 benchmark_checkpoint_metric: "composite"
 benchmark_composite_weights:
   wql: 0.6
