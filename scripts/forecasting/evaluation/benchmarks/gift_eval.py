@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import time
+import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -358,6 +359,23 @@ class GiftEvalAdapter(BenchmarkAdapter):
 
         n_total = len(task_configs)
         logger.info(f"GIFT-Eval: evaluating {n_total} task configurations")
+
+        # Suppress noisy warnings from GluonTS and pandas:
+        # 1) GluonTS QuantileForecast emits "mean prediction is not stored"
+        #    every time MSE(forecast_type="mean") accesses .mean — harmless,
+        #    median is used as fallback (standard practice for quantile models).
+        # 2) pandas FutureWarning for deprecated freq aliases ('H'->'h',
+        #    'T'->'min') originating from gluonts/gift-eval internals.
+        warnings.filterwarnings(
+            "ignore",
+            message="The mean prediction is not stored",
+            module="gluonts",
+        )
+        warnings.filterwarnings(
+            "ignore",
+            category=FutureWarning,
+            module=r"(gluonts|gift_eval)",
+        )
 
         for idx, (ds_name, term) in enumerate(task_configs, 1):
             task_start = time.time()
