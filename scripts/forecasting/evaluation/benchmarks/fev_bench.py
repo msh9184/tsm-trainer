@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import time
+import traceback
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -355,7 +356,12 @@ class FevBenchAdapter(BenchmarkAdapter):
             except Exception as e:
                 elapsed = time.time() - task_start
                 logger.warning(
-                    f"  [{task_idx}/{n_total}] {task.dataset_config}: FAILED — {e}"
+                    f"  [{task_idx}/{n_total}] {task.dataset_config}: "
+                    f"FAILED — {type(e).__name__}: {e}"
+                )
+                logger.debug(
+                    f"Full traceback for {task.dataset_config}:\n"
+                    f"{traceback.format_exc()}"
                 )
                 results.append({
                     "task": task.dataset_config,

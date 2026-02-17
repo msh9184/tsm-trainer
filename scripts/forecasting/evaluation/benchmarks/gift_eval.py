@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import time
+import traceback
 import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -428,9 +429,9 @@ class GiftEvalAdapter(BenchmarkAdapter):
             task_start = time.time()
 
             try:
-                # Load dataset ONCE — always to_univariate=True for Chronos-2
-                ds = Dataset(name=ds_name, term=term, to_univariate=True)
-                num_variates = ds.target_dim  # After to_univariate=True (always 1 for Chronos-2)
+                # Load dataset — variate splitting handled below for multivariate
+                ds = Dataset(name=ds_name, term=term)
+                num_variates = ds.target_dim
 
                 pred_len = ds.prediction_length
                 freq = ds.freq
@@ -447,8 +448,7 @@ class GiftEvalAdapter(BenchmarkAdapter):
                     future = np.asarray(lbl["target"], dtype=np.float32)
 
                     if past.ndim == 2:
-                        # Multivariate after to_univariate=True shouldn't happen,
-                        # but handle defensively: split each variate
+                        # Multivariate: split each variate into separate univariate context
                         for v in range(past.shape[0]):
                             contexts.append(torch.tensor(past[v], dtype=torch.float32))
                             y_pasts.append(past[v])
@@ -506,7 +506,10 @@ class GiftEvalAdapter(BenchmarkAdapter):
                 idx_w = len(str(n_total))
                 logger.warning(
                     f"─── [{idx:0{idx_w}d}/{n_total}] {ds_name}/{term} "
-                    f"─── FAILED │ {elapsed:.1f}s ───\n  {e}"
+                    f"─── FAILED │ {elapsed:.1f}s ───\n  {type(e).__name__}: {e}"
+                )
+                logger.debug(
+                    f"Full traceback for {ds_name}/{term}:\n{traceback.format_exc()}"
                 )
                 results.append({
                     "dataset": f"{ds_name}/{term}",

@@ -464,22 +464,21 @@ class MetricRegistry:
         median_idx = min(range(Q), key=lambda i: abs(quantile_levels[i] - 0.5))
         y_median = y_pred_quantiles[:, median_idx, :]  # (N, H)
 
-        # Compute seasonal naive scales for all items
+        # Compute seasonal naive scales for all items (nanmean for missing values)
         scales = np.empty(N)
         for i in range(N):
             past = y_past[i]
             if len(past) <= seasonal_period:
                 if len(past) > 1:
-                    scales[i] = float(np.abs(np.diff(past)).mean())
+                    scales[i] = float(np.nanmean(np.abs(np.diff(past))))
                 else:
                     scales[i] = np.nan
             else:
-                scales[i] = float(
-                    np.abs(past[seasonal_period:] - past[:-seasonal_period]).mean()
-                )
+                diffs = past[seasonal_period:] - past[:-seasonal_period]
+                scales[i] = float(np.nanmean(np.abs(diffs)))
 
         valid_scale = (scales > 0) & ~np.isnan(scales)
-        mae_per_item = np.abs(y_true - y_median).mean(axis=1)  # (N,)
+        mae_per_item = np.nanmean(np.abs(y_true - y_median), axis=1)  # (N,)
         mase_values = np.full(N, np.nan)
         if valid_scale.any():
             mase_values[valid_scale] = mae_per_item[valid_scale] / scales[valid_scale]
@@ -568,43 +567,45 @@ class MetricRegistry:
         diff = (y_true - y_median).astype(np.float64)  # (N, H)
         abs_diff = np.abs(diff)
 
-        # MSE[0.5]: per-item mean, then average
-        mse_per_item = np.mean(diff ** 2, axis=1)  # (N,)
-        mse = float(np.mean(mse_per_item))
+        # MSE[0.5]: per-item nanmean, then nanmean (handles missing values)
+        mse_per_item = np.nanmean(diff ** 2, axis=1)  # (N,)
+        mse = float(np.nanmean(mse_per_item))
 
-        # MAE[0.5]: per-item mean, then average
-        mae_per_item = np.mean(abs_diff, axis=1)  # (N,)
-        mae = float(np.mean(mae_per_item))
+        # MAE[0.5]: per-item nanmean, then nanmean (handles missing values)
+        mae_per_item = np.nanmean(abs_diff, axis=1)  # (N,)
+        mae = float(np.nanmean(mae_per_item))
 
-        # RMSE[0.5]: per-item RMSE, then average
+        # RMSE[0.5]: per-item RMSE, then nanmean (handles missing values)
         rmse_per_item = np.sqrt(mse_per_item)  # (N,)
-        rmse = float(np.mean(rmse_per_item))
+        rmse = float(np.nanmean(rmse_per_item))
 
         # sMAPE[0.5]: 200 * mean(|y-ŷ| / (|y|+|ŷ|)) per item
         denom_smape = np.abs(y_true.astype(np.float64)) + np.abs(y_median.astype(np.float64))
         with np.errstate(divide="ignore", invalid="ignore"):
             ratio_smape = np.where(denom_smape > 0, abs_diff / denom_smape, np.nan)
-        smape_per_item = 200.0 * np.nanmean(ratio_smape, axis=1)  # (N,)
-        smape = float(np.nanmean(smape_per_item))
+        with np.errstate(all="ignore"):
+            smape_per_item = 200.0 * np.nanmean(ratio_smape, axis=1)  # (N,)
+            smape = float(np.nanmean(smape_per_item))
 
         # MAPE[0.5]: 100 * mean(|y-ŷ| / |y|) per item
         abs_y_point = np.abs(y_true.astype(np.float64))
         with np.errstate(divide="ignore", invalid="ignore"):
             ratio_mape = np.where(abs_y_point > 0, abs_diff / abs_y_point, np.nan)
-        mape_per_item = 100.0 * np.nanmean(ratio_mape, axis=1)  # (N,)
-        mape = float(np.nanmean(mape_per_item))
+        with np.errstate(all="ignore"):
+            mape_per_item = 100.0 * np.nanmean(ratio_mape, axis=1)  # (N,)
+            mape = float(np.nanmean(mape_per_item))
 
         # NRMSE[0.5]: RMSE / mean(|y|) per item
-        mean_abs_y = np.mean(np.abs(y_true.astype(np.float64)), axis=1)  # (N,)
+        mean_abs_y = np.nanmean(np.abs(y_true.astype(np.float64)), axis=1)  # (N,)
         nrmse_valid = mean_abs_y > 0
         nrmse_vals = np.full(N, np.nan)
         if nrmse_valid.any():
             nrmse_vals[nrmse_valid] = rmse_per_item[nrmse_valid] / mean_abs_y[nrmse_valid]
         nrmse = float(np.nanmean(nrmse_vals))
 
-        # ND[0.5]: sum|y-ŷ| / sum|y| per item
-        sum_abs_diff = abs_diff.sum(axis=1)  # (N,)
-        sum_abs_y = np.abs(y_true.astype(np.float64)).sum(axis=1)  # (N,)
+        # ND[0.5]: sum|y-ŷ| / sum|y| per item (nansum for missing values)
+        sum_abs_diff = np.nansum(abs_diff, axis=1)  # (N,)
+        sum_abs_y = np.nansum(np.abs(y_true.astype(np.float64)), axis=1)  # (N,)
         nd_valid = sum_abs_y > 0
         nd_vals = np.full(N, np.nan)
         if nd_valid.any():
@@ -623,21 +624,21 @@ class MetricRegistry:
         penalty_lower = np.maximum(lower - y_true_f64, 0)
         penalty_upper = np.maximum(y_true_f64 - upper, 0)
         interval_score = interval_width + (2.0 / alpha) * (penalty_lower + penalty_upper)
-        is_mean_per_item = interval_score.mean(axis=1)  # (N,)
+        is_mean_per_item = np.nanmean(interval_score, axis=1)  # (N,)
 
         # ── Seasonal scales for MASE + MSIS ──
+        # Use nanmean to handle missing values in past data (e.g., *_with_missing datasets)
         scales = np.empty(N)
         for i in range(N):
             past = y_past[i]
             if len(past) <= seasonal_period:
                 if len(past) > 1:
-                    scales[i] = float(np.abs(np.diff(past)).mean())
+                    scales[i] = float(np.nanmean(np.abs(np.diff(past))))
                 else:
                     scales[i] = np.nan
             else:
-                scales[i] = float(
-                    np.abs(past[seasonal_period:] - past[:-seasonal_period]).mean()
-                )
+                diffs = past[seasonal_period:] - past[:-seasonal_period]
+                scales[i] = float(np.nanmean(np.abs(diffs)))
 
         valid_scale = (scales > 0) & ~np.isnan(scales)
 
@@ -645,13 +646,15 @@ class MetricRegistry:
         mase_vals = np.full(N, np.nan)
         if valid_scale.any():
             mase_vals[valid_scale] = mae_per_item[valid_scale] / scales[valid_scale]
-        mase = float(np.nanmean(mase_vals))
+        with np.errstate(all="ignore"):
+            mase = float(np.nanmean(mase_vals))
 
         # MSIS
         msis_vals = np.full(N, np.nan)
         if valid_scale.any():
             msis_vals[valid_scale] = is_mean_per_item[valid_scale] / scales[valid_scale]
-        msis = float(np.nanmean(msis_vals))
+        with np.errstate(all="ignore"):
+            msis = float(np.nanmean(msis_vals))
 
         # MSE[mean] = MSE[0.5] for quantile models (QuantileForecast.mean → median)
         mse_mean = mse

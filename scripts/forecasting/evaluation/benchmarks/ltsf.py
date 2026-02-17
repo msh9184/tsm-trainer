@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import time
+import traceback
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -425,7 +426,12 @@ class LTSFAdapter(BenchmarkAdapter):
             except Exception as e:
                 elapsed = time.time() - task_start
                 logger.warning(
-                    f"  [{idx}/{n_total}] {ds_name}/H={pred_len}: FAILED — {e}"
+                    f"  [{idx}/{n_total}] {ds_name}/H={pred_len}: "
+                    f"FAILED — {type(e).__name__}: {e}"
+                )
+                logger.debug(
+                    f"Full traceback for {ds_name}/H={pred_len}:\n"
+                    f"{traceback.format_exc()}"
                 )
                 results.append({
                     "dataset": ds_name,
