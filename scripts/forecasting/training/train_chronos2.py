@@ -1428,13 +1428,16 @@ class ComprehensiveTrainingCallback(TrainerCallback):
         bm_results = None
         if self._benchmark_cb is not None:
             bm_results = self._benchmark_cb.last_benchmark_results
-            best_results = self._benchmark_cb._best_results
+            # Support both legacy (_best_results) and enhanced (_best_checkpoints) callbacks
+            best_ckpts = getattr(self._benchmark_cb, "_best_checkpoints", None)
+            if best_ckpts is None:
+                best_ckpts = getattr(self._benchmark_cb, "_best_results", [])
         if bm_results:
             lines.append("║" + "".ljust(72) + "║")
             lines.append("║" + f"  Last benchmark WQL:  {bm_results.get('avg_wql', 'N/A')}".ljust(72) + "║")
             lines.append("║" + f"  Last benchmark MASE: {bm_results.get('avg_mase', 'N/A')}".ljust(72) + "║")
-            if best_results:
-                lines.append("║" + f"  Best benchmark WQL:  {best_results[0][0]:.4f} (step {best_results[0][1]:,})".ljust(72) + "║")
+            if best_ckpts:
+                lines.append("║" + f"  Best benchmark score: {best_ckpts[0][0]:.4f} (step {best_ckpts[0][1]:,})".ljust(72) + "║")
 
         if self._lazy_source is not None:
             lines.append("║" + "".ljust(72) + "║")

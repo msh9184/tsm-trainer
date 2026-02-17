@@ -52,9 +52,12 @@ The first target model is **Chronos-2** (120M params), an encoder-only transform
 |---------|-------------|
 | **Health Reports** | Periodic boxed reports with loss analysis, gradient health, GPU utilization, throughput |
 | **Sparkline Plots** | Unicode sparklines for loss/LR trends directly in terminal |
-| **Lite Benchmark** | WQL/MASE evaluation on 5 datasets during training |
-| **Top-K Checkpoints** | Automatic retention of best checkpoints by forecast quality |
-| **TensorBoard** | Full metrics logging (loss, LR, benchmark scores, gradient norms) |
+| **Distributed Benchmark** | WQL/MASE evaluation across all GPUs (FSDP-compatible) |
+| **Metric-Encoded Checkpoints** | NeMo-style filenames with step/WQL/MASE/composite scores |
+| **Top-K Checkpoint Management** | Automatic retention of best K models with worst-removal |
+| **Validation Reports** | Per-eval JSON + cumulative CSV for offline analysis |
+| **Resume-Safe State** | Rebuilds top-K state from disk artifacts on training resume |
+| **TensorBoard** | Hierarchical metrics: per-dataset WQL/MASE, validation_loss, best tracking |
 
 ### Data
 
@@ -110,6 +113,8 @@ tsm-trainer/
 │       │   ├── train_chronos2.py      # Chronos-2 training script
 │       │   ├── train.py               # Chronos (T5/GPT2) training
 │       │   ├── train.sh               # mpirun launcher
+│       │   ├── callbacks/             # Training callbacks
+│       │   │   └── benchmark_callback.py  # Validation + checkpoint management
 │       │   └── configs/               # Training YAML configs
 │       ├── evaluation/
 │       │   ├── run_benchmark.py       # Unified benchmark CLI
@@ -207,7 +212,8 @@ export HF_HOME=/group-volume/hf_cache
 
 - [x] **Chronos-2 training pipeline** — mpirun, FSDP, gradient checkpointing, lazy loading
 - [x] **Training monitoring** — health reports, sparklines, TensorBoard
-- [x] **Lite benchmark** — periodic WQL/MASE during training
+- [x] **Distributed benchmark** — multi-GPU WQL/MASE evaluation during training
+- [x] **Validation infrastructure** — metric-encoded checkpoints, JSON/CSV reports, resume-safe state
 - [ ] **Data generation** — TSI, TCM generators, multivariatizers
 - [ ] **Classification task** — time series classification framework
 - [ ] **Anomaly detection task** — time series anomaly detection framework

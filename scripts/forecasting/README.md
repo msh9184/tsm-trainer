@@ -275,14 +275,50 @@ benchmark_config: "configs/chronos-lite.yaml"
 benchmark_eval_steps: 200
 benchmark_top_k_checkpoints: 3
 benchmark_batch_size: 32
-benchmark_checkpoint_metric: "composite"
+benchmark_checkpoint_metric: "composite"    # "wql" | "mase" | "composite"
 benchmark_composite_weights:
   wql: 0.6
   mase: 0.4
 benchmark_datasets_root: "/group-volume/ts-dataset/benchmarks/chronos"
 ```
 
-Results are logged to TensorBoard under `benchmark/avg_wql`, `benchmark/avg_mase`, and per-dataset tags.
+**Key capabilities:**
+
+- **Distributed evaluation**: All GPUs participate in forward passes (FSDP-compatible)
+- **Composite metric**: Weighted WQL + MASE for checkpoint selection
+- **Top-K management**: Retains only the best K model checkpoints by metric
+- **Persistent reports**: Per-eval JSON + cumulative CSV in `eval_results/`
+- **Metric-encoded checkpoints**: NeMo-style filenames with step/WQL/MASE/composite
+- **Resume-safe**: Restores top-K state and eval history from disk artifacts
+- **Delta tracking**: Shows improvement/regression arrows vs previous evaluation
+- **TensorBoard**: Hierarchical per-dataset + aggregate metrics + checkpoint tracking
+
+### Output Directory Structure
+
+```
+outputs/chronos2-base-stage1/
+├── best_checkpoints/                          # Top-K metric-encoded models
+│   ├── config.json                            # Shared model config (saved once)
+│   ├── model-step=000200-wql=0.2734-mase=8.0817-composite=3.3967.safetensors
+│   └── model-step=000400-wql=0.2500-mase=7.5000-composite=3.1500.safetensors
+├── eval_results/                              # Validation reports
+│   ├── eval_step_000200.json                  # Per-evaluation detailed JSON
+│   ├── eval_step_000400.json
+│   └── validation_history.csv                 # Cumulative CSV of all evals
+├── checkpoint-200/                            # HF Trainer checkpoint (resume)
+│   ├── config.json
+│   ├── model.safetensors
+│   ├── trainer_state.json
+│   └── training_args.bin
+├── runs/                                      # TensorBoard event logs
+└── final-checkpoint/                          # End-of-training model
+```
+
+**`best_checkpoints/`**: Contains only the top-K best model weights as flat `.safetensors` files with metrics encoded in filenames. Uses hardlinks when possible (no extra disk usage on same filesystem). `config.json` is saved once and shared.
+
+**`eval_results/`**: Each evaluation produces a detailed JSON report with per-dataset metrics, composite score, timestamp, and current top-K checkpoint list. `validation_history.csv` provides a cumulative spreadsheet-friendly view of all evaluations.
+
+**Checkpoint separation**: HF Trainer's `checkpoint-{step}/` directories are for training resume only (managed by `save_total_limit`). The `best_checkpoints/` directory is independently managed by the benchmark callback's top-K logic.
 
 ---
 
@@ -357,9 +393,23 @@ tensorboard --logdir output/chronos2-base-stage1
 ```
 
 Logged metrics:
-- `train/loss`, `train/learning_rate`, `train/grad_norm`
-- `benchmark/avg_wql`, `benchmark/avg_mase`
-- `benchmark/{dataset}/wql`, `benchmark/{dataset}/mase`
+
+| Tag | Description |
+|-----|-------------|
+| `train/loss` | Training loss per step |
+| `train/learning_rate` | Learning rate schedule |
+| `train/grad_norm` | Gradient norm (pre-clipping) |
+| `benchmark/{tier}/avg_wql` | Average WQL across datasets |
+| `benchmark/{tier}/avg_mase` | Average MASE across datasets |
+| `benchmark/{tier}/validation_loss` | Validation loss proxy (= avg_wql) |
+| `benchmark/{tier}/composite_score` | Weighted composite metric |
+| `benchmark/{tier}/{dataset}/wql` | Per-dataset WQL |
+| `benchmark/{tier}/{dataset}/mase` | Per-dataset MASE |
+| `benchmark/{tier}/elapsed_seconds` | Evaluation wall time |
+| `benchmark/checkpoint/best_composite` | Best composite score so far |
+| `benchmark/checkpoint/best_wql` | Best WQL so far |
+| `benchmark/checkpoint/best_mase` | Best MASE so far |
+| `benchmark/checkpoint/n_top_k` | Number of retained top-K checkpoints |
 
 ### Training Configuration Summary
 
@@ -561,6 +611,9 @@ scripts/forecasting/
 │   ├── train_chronos2.py        # Main Chronos-2 training script (~1900 lines)
 │   ├── train.py                 # Chronos (T5/GPT2) training script
 │   ├── train.sh                 # mpirun/torchrun auto-launcher
+│   ├── callbacks/               # Training callbacks
+│   │   ├── __init__.py
+│   │   └── benchmark_callback.py  # EnhancedBenchmarkCallback (~1100 lines)
 │   └── configs/
 │       ├── chronos2-test.yaml          # Quick test (2L/256d, 200 steps)
 │       ├── chronos2-base.yaml          # 120M Stage 1 (2048 ctx)
@@ -576,6 +629,7 @@ scripts/forecasting/
 │   │   ├── metrics.py           #   WQL, MASE, SQL, CRPS, ...
 │   │   ├── forecaster.py        #   BaseForecaster + model adapters
 │   │   ├── evaluator.py         #   Unified evaluation loop
+│   │   ├── distributed.py       #   Multi-GPU evaluation utilities
 │   │   └── aggregator.py        #   gmean, bootstrap CI, win rate
 │   ├── benchmarks/              # Pluggable benchmark adapters
 │   ├── configs/                 # Benchmark dataset configs (YAML)
