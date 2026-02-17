@@ -1,0 +1,82 @@
+# ===========================================================================
+# LTSF Benchmark Configuration
+# ===========================================================================
+# Long-Term Series Forecasting benchmark from DLinear (AAAI 2023).
+# Standard evaluation protocol used by PatchTST, iTransformer, etc.
+#
+# Paper: arXiv:2205.13504
+# Protocol:
+#   - 9 datasets x 4 horizons = 36 tasks (ILI uses different horizons)
+#   - z-normalization per-variable (train-set statistics)
+#   - Stride-1 sliding window evaluation
+#   - Point forecasts (median from quantile output)
+#   - MSE and MAE on z-normalized values
+#   - Flat mean over all (windows x timesteps x variables)
+#
+# Splits: ETT = 6:2:2, Others = 7:1:2 (chronological)
+# Default lookback: 96 timesteps
+#
+# Expected time: ~30 min (A100 GPU), highly variable by dataset size
+#
+# NOTE: This benchmark uses the LTSF adapter, not the Chronos-style
+# YAML evaluator. The config below documents available datasets.
+#
+# NOTE: Chronos-2 does NOT evaluate on LTSF in the paper. This enables
+# cross-comparison with PatchTST/iTransformer/DLinear baselines.
+#
+# Local data: Directory containing CSV files for each dataset
+# Usage:
+#   python run_benchmark.py \
+#       --model-path /path/to/model \
+#       --benchmarks ltsf \
+#       --ltsf-data /path/to/ltsf_csvs/
+# ===========================================================================
+
+datasets_root: /group-volume/ts-dataset/benchmarks/ltsf/
+seq_len: 96
+
+datasets:
+  - name: ETTh1
+    n_vars: 7
+    freq: H
+    horizons: [96, 192, 336, 720]
+
+  - name: ETTh2
+    n_vars: 7
+    freq: H
+    horizons: [96, 192, 336, 720]
+
+  - name: ETTm1
+    n_vars: 7
+    freq: 15T
+    horizons: [96, 192, 336, 720]
+
+  - name: ETTm2
+    n_vars: 7
+    freq: 15T
+    horizons: [96, 192, 336, 720]
+
+  - name: Weather
+    n_vars: 21
+    freq: 10T
+    horizons: [96, 192, 336, 720]
+
+  - name: Traffic
+    n_vars: 862
+    freq: H
+    horizons: [96, 192, 336, 720]
+
+  - name: Electricity
+    n_vars: 321
+    freq: H
+    horizons: [96, 192, 336, 720]
+
+  - name: Exchange
+    n_vars: 8
+    freq: D
+    horizons: [96, 192, 336, 720]
+
+  - name: ILI
+    n_vars: 7
+    freq: W
+    horizons: [24, 36, 48, 60]
