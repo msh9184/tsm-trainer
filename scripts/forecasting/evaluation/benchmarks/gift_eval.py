@@ -271,130 +271,6 @@ GIFT_EVAL_MED_LONG_DATASETS = [
 ]
 
 
-def _build_gift_eval_metrics():
-    """Build the standard 11 GIFT-Eval GluonTS metrics."""
-    from gluonts.ev.metrics import (
-        MAE,
-        MAPE,
-        MASE,
-        MSE,
-        MSIS,
-        ND,
-        NRMSE,
-        RMSE,
-        SMAPE,
-        MeanWeightedSumQuantileLoss,
-    )
-
-    return [
-        MSE(forecast_type="mean"),
-        MSE(forecast_type=0.5),
-        MAE(),
-        MASE(),
-        MAPE(),
-        SMAPE(),
-        MSIS(),
-        RMSE(),
-        NRMSE(),
-        ND(),
-        MeanWeightedSumQuantileLoss(
-            quantile_levels=GIFT_EVAL_QUANTILES,
-        ),
-    ]
-
-
-class GiftEvalPredictor:
-    """GluonTS-compatible predictor wrapping a BaseForecaster.
-
-    This adapts our forecaster interface to produce ``QuantileForecast``
-    objects that gift-eval's ``evaluate_model()`` expects.
-    """
-
-    def __init__(
-        self,
-        forecaster: BaseForecaster,
-        prediction_length: int,
-        freq: str,
-        quantile_levels: list[float] | None = None,
-        batch_size: int = 32,
-    ):
-        self.forecaster = forecaster
-        self.prediction_length = prediction_length
-        self.freq = freq
-        self.quantile_levels = quantile_levels or GIFT_EVAL_QUANTILES
-        self.batch_size = batch_size
-
-    def predict(self, dataset, **kwargs):
-        """Generate QuantileForecast objects from dataset entries.
-
-        Yields one ``QuantileForecast`` per entry in the dataset.
-        """
-        import torch
-        from gluonts.model.forecast import QuantileForecast
-
-        # Collect all contexts
-        entries = list(dataset)
-        contexts = []
-        start_dates = []
-        for entry in entries:
-            target = np.asarray(entry["target"], dtype=np.float32)
-            # For multivariate targets, each variate is treated independently
-            if target.ndim == 2:
-                # Multivariate: shape (n_vars, T) — each row is a univariate series
-                for var_idx in range(target.shape[0]):
-                    contexts.append(torch.tensor(target[var_idx], dtype=torch.float32))
-            else:
-                contexts.append(torch.tensor(target, dtype=torch.float32))
-            start_dates.append(entry.get("start", pd.Timestamp("1970-01-01")))
-
-        if not contexts:
-            return
-
-        # Predict in batches
-        all_quantiles = self.forecaster.predict_batch(
-            contexts,
-            prediction_length=self.prediction_length,
-            quantile_levels=self.quantile_levels,
-            batch_size=self.batch_size,
-        )
-        # all_quantiles shape: (N, Q, H)
-
-        # Yield QuantileForecast objects
-        ctx_idx = 0
-        for entry_idx, entry in enumerate(entries):
-            target = np.asarray(entry["target"], dtype=np.float32)
-
-            if target.ndim == 2:
-                n_vars = target.shape[0]
-                # Collect quantile forecasts for all variates
-                forecast_arrays = []
-                for _ in range(n_vars):
-                    # Shape: (Q, H)
-                    forecast_arrays.append(all_quantiles[ctx_idx])
-                    ctx_idx += 1
-                # Stack to (n_vars, Q, H) then transpose to (Q, H, n_vars)
-                # But QuantileForecast expects (Q, H) for univariate
-                # For multivariate, stack into (Q, H) per variate
-                # gift-eval with to_univariate=True already splits, so this
-                # branch handles the multivariate case when to_univariate=False
-                stacked = np.stack(forecast_arrays, axis=0)  # (n_vars, Q, H)
-                # Rearrange to (Q, H) if single variate, otherwise (Q, H*n_vars)?
-                # Actually for GIFT-Eval, we handle this per variate
-                for var_idx in range(n_vars):
-                    yield QuantileForecast(
-                        forecast_arrays=stacked[var_idx],  # (Q, H)
-                        forecast_keys=[str(q) for q in self.quantile_levels],
-                        start_date=start_dates[entry_idx],
-                    )
-            else:
-                yield QuantileForecast(
-                    forecast_arrays=all_quantiles[ctx_idx],  # (Q, H)
-                    forecast_keys=[str(q) for q in self.quantile_levels],
-                    start_date=start_dates[entry_idx],
-                )
-                ctx_idx += 1
-
-
 class GiftEvalAdapter(BenchmarkAdapter):
     """GIFT-Eval benchmark adapter.
 
@@ -502,22 +378,28 @@ class GiftEvalAdapter(BenchmarkAdapter):
         forecaster: BaseForecaster,
         **kwargs,
     ) -> pd.DataFrame:
-        """Run GIFT-Eval evaluation.
+        """Run GIFT-Eval evaluation with fast vectorized metrics.
 
-        Follows the official GIFT-Eval protocol from chronos-2.ipynb:
-        1. For each (dataset, term), load Dataset
-        2. Convert multivariate to univariate if needed
-        3. Create GluonTS-compatible predictor
-        4. Call evaluate_model() with 11 metrics, axis=None
+        Optimized pipeline that bypasses GluonTS ``evaluate_model()``:
+        1. Load Dataset once with ``to_univariate=True``
+        2. Extract test inputs/labels directly from GluonTS TestData
+        3. Batch GPU inference → (N, Q, H) numpy array
+        4. Compute all 11 metrics via vectorized numpy (no QuantileForecast objects)
+
+        This eliminates the primary CPU bottleneck:
+        - No QuantileForecast Python object creation (thousands per task)
+        - No GluonTS per-item metric iteration
+        - No pandas DataFrame manipulation in evaluate_model
 
         Returns
         -------
         pd.DataFrame
             ~98 rows with 15 columns matching leaderboard format.
         """
+        import torch
+
         try:
             from gift_eval.data import Dataset
-            from gluonts.model import evaluate_model
             from gluonts.time_feature import get_seasonality
         except ImportError:
             raise ImportError(
@@ -525,28 +407,15 @@ class GiftEvalAdapter(BenchmarkAdapter):
                 "  pip install gift-eval gluonts"
             )
 
-        metrics = _build_gift_eval_metrics()
+        from engine.metrics import MetricRegistry
+
         task_configs = self._get_task_configs()
         results = []
 
         n_total = len(task_configs)
-        logger.info(f"GIFT-Eval: evaluating {n_total} task configurations")
+        logger.info(f"GIFT-Eval: evaluating {n_total} task configurations (fast mode)")
 
-        # Suppress noisy warnings from GluonTS and pandas:
-        #
-        # 1) GluonTS QuantileForecast.mean uses logger.warning() (logging module)
-        #    to emit "mean prediction is not stored" every time
-        #    MSE(forecast_type="mean") accesses .mean — harmless, median is
-        #    used as fallback (standard practice for quantile models).
-        #    Must suppress via logging.getLogger, NOT warnings.filterwarnings.
-        #
-        # 2) pandas FutureWarning for deprecated freq aliases ('H'->'h',
-        #    'T'->'min') originating from gluonts/gift-eval internals.
-        #    These use warnings.warn(), so filterwarnings works.
-        _gluonts_forecast_logger = logging.getLogger("gluonts.model.forecast")
-        _prev_level = _gluonts_forecast_logger.level
-        _gluonts_forecast_logger.setLevel(logging.ERROR)
-
+        # Suppress pandas FutureWarning from gluonts/gift-eval internals
         warnings.filterwarnings(
             "ignore",
             category=FutureWarning,
@@ -559,57 +428,69 @@ class GiftEvalAdapter(BenchmarkAdapter):
             task_start = time.time()
 
             try:
-                # Load dataset — convert multivariate to univariate
-                ds_raw = Dataset(name=ds_name, term=term, to_univariate=False)
-                to_univariate = ds_raw.target_dim > 1
-                ds = Dataset(name=ds_name, term=term, to_univariate=to_univariate)
+                # Load dataset ONCE — always to_univariate=True for Chronos-2
+                ds = Dataset(name=ds_name, term=term, to_univariate=True)
+                num_variates = ds.target_dim  # After to_univariate=True (always 1 for Chronos-2)
 
                 pred_len = ds.prediction_length
                 freq = ds.freq
                 season_length = get_seasonality(freq)
 
-                # Create GluonTS-compatible predictor
-                predictor = GiftEvalPredictor(
-                    forecaster=forecaster,
+                # ── Extract test data directly (bypass GluonTS evaluate_model) ──
+                test_data = ds.test_data
+                contexts = []
+                y_pasts = []
+                y_trues = []
+
+                for inp, lbl in zip(test_data.input, test_data.label):
+                    past = np.asarray(inp["target"], dtype=np.float32)
+                    future = np.asarray(lbl["target"], dtype=np.float32)
+
+                    if past.ndim == 2:
+                        # Multivariate after to_univariate=True shouldn't happen,
+                        # but handle defensively: split each variate
+                        for v in range(past.shape[0]):
+                            contexts.append(torch.tensor(past[v], dtype=torch.float32))
+                            y_pasts.append(past[v])
+                            fut_v = future[v] if future.ndim == 2 else future
+                            y_trues.append(fut_v[:pred_len])
+                    else:
+                        contexts.append(torch.tensor(past, dtype=torch.float32))
+                        y_pasts.append(past)
+                        y_trues.append(future[:pred_len])
+
+                if not contexts:
+                    raise ValueError(f"No test entries for {ds_name}/{term}")
+
+                y_true = np.stack(y_trues)  # (N, H)
+                n_series = len(contexts)
+
+                # ── Batch GPU inference ──
+                y_pred_q = forecaster.predict_batch(
+                    contexts,
                     prediction_length=pred_len,
-                    freq=freq,
                     quantile_levels=GIFT_EVAL_QUANTILES,
                     batch_size=self._batch_size,
-                )
+                )  # (N, Q, H)
 
-                # Evaluate using official GIFT-Eval protocol
-                res = evaluate_model(
-                    predictor,
-                    test_data=ds.test_data,
-                    metrics=metrics,
-                    batch_size=1024,
-                    axis=None,
-                    mask_invalid_label=True,
-                    allow_nan_forecast=False,
-                    seasonality=season_length,
+                # ── Fast vectorized metric computation (all 11 metrics) ──
+                metric_dict = MetricRegistry.compute_gift_eval_metrics_fast(
+                    y_pred_q, y_true, y_pasts,
+                    GIFT_EVAL_QUANTILES, season_length,
                 )
 
                 elapsed = time.time() - task_start
 
-                # Build result row matching leaderboard CSV format
+                # Build result row matching leaderboard format
                 row = {
-                    "dataset": f"{ds_name}/{term}" if "/" not in ds_name else f"{ds_name}/{term}",
+                    "dataset": f"{ds_name}/{term}",
                     "model": forecaster.name,
+                    **metric_dict,
+                    "domain": self._get_domain(ds_name),
+                    "num_variates": num_variates,
+                    "n_series": n_series,
+                    "elapsed_s": round(elapsed, 1),
                 }
-
-                # Extract metric values from evaluate_model result
-                # The result is a dict or DataFrame with metric column names
-                if isinstance(res, dict):
-                    row.update(res)
-                elif isinstance(res, pd.DataFrame):
-                    for col in res.columns:
-                        row[col] = res[col].iloc[0] if len(res) > 0 else None
-
-                # Add metadata columns
-                row["domain"] = self._get_domain(ds_name)
-                row["num_variates"] = ds_raw.target_dim
-                row["elapsed_s"] = round(elapsed, 1)
-
                 results.append(row)
 
                 # Log all 11 metrics for this task
@@ -628,14 +509,11 @@ class GiftEvalAdapter(BenchmarkAdapter):
                     f"─── FAILED │ {elapsed:.1f}s ───\n  {e}"
                 )
                 results.append({
-                    "dataset": f"{ds_name}/{term}" if "/" not in ds_name else f"{ds_name}/{term}",
+                    "dataset": f"{ds_name}/{term}",
                     "model": forecaster.name,
                     "domain": self._get_domain(ds_name),
                     "elapsed_s": round(elapsed, 1),
                 })
-
-        # Restore gluonts.model.forecast logger level
-        _gluonts_forecast_logger.setLevel(_prev_level)
 
         # Log comprehensive evaluation summary
         total_elapsed = time.time() - eval_start

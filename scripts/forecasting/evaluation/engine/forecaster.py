@@ -252,7 +252,7 @@ class Chronos2Forecaster(BaseForecaster):
         quantile_levels: list[float],
         **kwargs,
     ) -> np.ndarray:
-        with torch.no_grad():
+        with torch.inference_mode():
             quantiles, _ = self._pipeline.predict_quantiles(
                 context,
                 prediction_length=prediction_length,
@@ -298,7 +298,7 @@ class ChronosBoltForecaster(BaseForecaster):
         quantile_levels: list[float],
         **kwargs,
     ) -> np.ndarray:
-        with torch.no_grad():
+        with torch.inference_mode():
             quantiles, _ = self._pipeline.predict_quantiles(
                 context,
                 prediction_length=prediction_length,
@@ -357,7 +357,7 @@ class TrainingModelForecaster(BaseForecaster):
         quantile_levels: list[float],
         **kwargs,
     ) -> np.ndarray:
-        with torch.no_grad():
+        with torch.inference_mode():
             quantiles, _ = self._pipeline.predict_quantiles(
                 context,
                 prediction_length=prediction_length,

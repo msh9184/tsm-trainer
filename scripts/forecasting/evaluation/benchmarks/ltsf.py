@@ -375,13 +375,13 @@ class LTSFAdapter(BenchmarkAdapter):
                     batch_contexts = contexts[batch_start:batch_end]  # (B, seq_len, C)
                     n_batch = len(batch_contexts)
 
-                    # Flatten: each variable in each window becomes a separate series
-                    flat_contexts = []
-                    for w in range(n_batch):
-                        for v in range(n_vars):
-                            flat_contexts.append(
-                                torch.tensor(batch_contexts[w, :, v], dtype=torch.float32)
-                            )
+                    # Vectorized flatten: (B, seq_len, C) → (B*C, seq_len)
+                    # Transpose to (B, C, seq_len), then reshape to (B*C, seq_len)
+                    flat_np = np.ascontiguousarray(
+                        batch_contexts.transpose(0, 2, 1)
+                    ).reshape(-1, self._seq_len)
+                    flat_tensor = torch.from_numpy(flat_np)  # (B*C, seq_len)
+                    flat_contexts = list(flat_tensor)  # list of B*C 1D tensors
 
                     # Predict point forecasts (median)
                     point_preds = forecaster.predict_point(

@@ -397,6 +397,279 @@ class MetricRegistry:
 
         return float(2.0 * ql.mean())
 
+    # ------------------------------------------------------------------
+    # Fast batch metric computation (bypass GluonTS)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def compute_chronos_metrics_fast(
+        y_pred_quantiles: np.ndarray,
+        y_true: np.ndarray,
+        y_past: list[np.ndarray],
+        quantile_levels: list[float],
+        seasonal_period: int = 1,
+    ) -> dict:
+        """Compute WQL + MASE matching GluonTS evaluate_forecasts output.
+
+        Replaces the entire GluonTS evaluation pipeline for Chronos benchmarks:
+        - No QuantileForecast object creation
+        - No evaluate_forecasts() call
+        - Pure numpy vectorized computation
+
+        The WQL computation matches GluonTS ``MeanWeightedSumQuantileLoss``:
+        per-item normalized quantile loss, then averaged across items.
+
+        Parameters
+        ----------
+        y_pred_quantiles : np.ndarray, shape (N, Q, H)
+            Predicted quantile values.
+        y_true : np.ndarray, shape (N, H)
+            Ground truth future values.
+        y_past : list of np.ndarray
+            Historical (context) values per series, variable length.
+        quantile_levels : list[float]
+            Quantile levels corresponding to Q axis.
+        seasonal_period : int
+            Seasonal period for MASE naive scale.
+
+        Returns
+        -------
+        dict
+            {"WQL": float, "MASE": float}
+        """
+        N = y_true.shape[0]
+        Q = len(quantile_levels)
+
+        # ── WQL (matching GluonTS MeanWeightedSumQuantileLoss) ──
+        # Per-item: 2 * sum(QL over Q,H) / (Q * sum|y|)
+        q_arr = np.asarray(quantile_levels, dtype=np.float64)[np.newaxis, :, np.newaxis]
+        y_exp = y_true[:, np.newaxis, :].astype(np.float64)
+        yq = y_pred_quantiles.astype(np.float64)
+
+        errors = y_exp - yq  # (N, Q, H)
+        ql = np.where(errors >= 0, q_arr * errors, (q_arr - 1) * errors)
+
+        ql_sum_per_item = ql.sum(axis=(1, 2))  # (N,)
+        abs_y_sum = np.abs(y_true.astype(np.float64)).sum(axis=1)  # (N,)
+
+        valid_wql = abs_y_sum > 0
+        wql_values = np.full(N, np.nan)
+        if valid_wql.any():
+            wql_values[valid_wql] = (
+                2.0 * ql_sum_per_item[valid_wql] / (Q * abs_y_sum[valid_wql])
+            )
+        wql = float(np.nanmean(wql_values))
+
+        # ── MASE (median point forecast) ──
+        median_idx = min(range(Q), key=lambda i: abs(quantile_levels[i] - 0.5))
+        y_median = y_pred_quantiles[:, median_idx, :]  # (N, H)
+
+        # Compute seasonal naive scales for all items
+        scales = np.empty(N)
+        for i in range(N):
+            past = y_past[i]
+            if len(past) <= seasonal_period:
+                if len(past) > 1:
+                    scales[i] = float(np.abs(np.diff(past)).mean())
+                else:
+                    scales[i] = np.nan
+            else:
+                scales[i] = float(
+                    np.abs(past[seasonal_period:] - past[:-seasonal_period]).mean()
+                )
+
+        valid_scale = (scales > 0) & ~np.isnan(scales)
+        mae_per_item = np.abs(y_true - y_median).mean(axis=1)  # (N,)
+        mase_values = np.full(N, np.nan)
+        if valid_scale.any():
+            mase_values[valid_scale] = mae_per_item[valid_scale] / scales[valid_scale]
+        mase = float(np.nanmean(mase_values))
+
+        n_skipped = int((~valid_scale).sum())
+        if n_skipped > 0:
+            logger.debug(
+                f"MASE fast: skipped {n_skipped}/{N} series "
+                f"(constant or too short for seasonal_period={seasonal_period})"
+            )
+
+        return {"WQL": wql, "MASE": mase}
+
+    @staticmethod
+    def compute_gift_eval_metrics_fast(
+        y_pred_quantiles: np.ndarray,
+        y_true: np.ndarray,
+        y_past: list[np.ndarray],
+        quantile_levels: list[float],
+        seasonal_period: int = 1,
+    ) -> dict:
+        """Compute all 11 GIFT-Eval metrics from raw numpy arrays.
+
+        Replaces GluonTS ``evaluate_model()`` entirely, computing all metrics
+        in vectorized numpy operations where possible. Only the seasonal scale
+        computation for MASE/MSIS requires a per-item loop.
+
+        Metrics computed (matching GluonTS/GIFT-Eval leaderboard):
+        1. CRPS (MeanWeightedSumQuantileLoss) — quantile-based
+        2. MASE[0.5] — point forecast, seasonal-scaled
+        3. sMAPE[0.5] — symmetric percentage error
+        4. MAPE[0.5] — mean absolute percentage error
+        5. MSE[0.5] — mean squared error
+        6. MAE[0.5] — mean absolute error
+        7. RMSE[0.5] — root mean squared error
+        8. NRMSE[0.5] — normalized RMSE
+        9. ND[0.5] — normalized deviation
+        10. MSIS — mean scaled interval score (alpha=0.05)
+        11. MSE[mean] — equals MSE[0.5] for quantile models
+
+        Parameters
+        ----------
+        y_pred_quantiles : np.ndarray, shape (N, Q, H)
+        y_true : np.ndarray, shape (N, H)
+        y_past : list of np.ndarray, each (T_i,)
+        quantile_levels : list[float], length Q
+        seasonal_period : int
+
+        Returns
+        -------
+        dict
+            Keys match GluonTS evaluate_model column names for compatibility
+            with existing reporting infrastructure.
+        """
+        N = y_true.shape[0]
+        Q = len(quantile_levels)
+
+        # Find key quantile indices
+        median_idx = min(range(Q), key=lambda i: abs(quantile_levels[i] - 0.5))
+        q01_idx = min(range(Q), key=lambda i: abs(quantile_levels[i] - 0.1))
+        q09_idx = min(range(Q), key=lambda i: abs(quantile_levels[i] - 0.9))
+
+        y_median = y_pred_quantiles[:, median_idx, :]  # (N, H)
+
+        # ── CRPS (= GluonTS MeanWeightedSumQuantileLoss) ──
+        q_arr = np.asarray(quantile_levels, dtype=np.float64)[np.newaxis, :, np.newaxis]
+        y_exp = y_true[:, np.newaxis, :].astype(np.float64)
+        yq = y_pred_quantiles.astype(np.float64)
+
+        errors = y_exp - yq  # (N, Q, H)
+        ql = np.where(errors >= 0, q_arr * errors, (q_arr - 1) * errors)
+
+        ql_sum_per_item = ql.sum(axis=(1, 2))  # (N,)
+        abs_y_sum = np.abs(y_true.astype(np.float64)).sum(axis=1)  # (N,)
+
+        valid_crps = abs_y_sum > 0
+        crps_vals = np.full(N, np.nan)
+        if valid_crps.any():
+            crps_vals[valid_crps] = (
+                2.0 * ql_sum_per_item[valid_crps] / (Q * abs_y_sum[valid_crps])
+            )
+        crps = float(np.nanmean(crps_vals))
+
+        # ── Point forecast metrics (vectorized) ──
+        diff = (y_true - y_median).astype(np.float64)  # (N, H)
+        abs_diff = np.abs(diff)
+
+        # MSE[0.5]: per-item mean, then average
+        mse_per_item = np.mean(diff ** 2, axis=1)  # (N,)
+        mse = float(np.mean(mse_per_item))
+
+        # MAE[0.5]: per-item mean, then average
+        mae_per_item = np.mean(abs_diff, axis=1)  # (N,)
+        mae = float(np.mean(mae_per_item))
+
+        # RMSE[0.5]: per-item RMSE, then average
+        rmse_per_item = np.sqrt(mse_per_item)  # (N,)
+        rmse = float(np.mean(rmse_per_item))
+
+        # sMAPE[0.5]: 200 * mean(|y-ŷ| / (|y|+|ŷ|)) per item
+        denom_smape = np.abs(y_true.astype(np.float64)) + np.abs(y_median.astype(np.float64))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio_smape = np.where(denom_smape > 0, abs_diff / denom_smape, np.nan)
+        smape_per_item = 200.0 * np.nanmean(ratio_smape, axis=1)  # (N,)
+        smape = float(np.nanmean(smape_per_item))
+
+        # MAPE[0.5]: 100 * mean(|y-ŷ| / |y|) per item
+        abs_y_point = np.abs(y_true.astype(np.float64))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio_mape = np.where(abs_y_point > 0, abs_diff / abs_y_point, np.nan)
+        mape_per_item = 100.0 * np.nanmean(ratio_mape, axis=1)  # (N,)
+        mape = float(np.nanmean(mape_per_item))
+
+        # NRMSE[0.5]: RMSE / mean(|y|) per item
+        mean_abs_y = np.mean(np.abs(y_true.astype(np.float64)), axis=1)  # (N,)
+        nrmse_valid = mean_abs_y > 0
+        nrmse_vals = np.full(N, np.nan)
+        if nrmse_valid.any():
+            nrmse_vals[nrmse_valid] = rmse_per_item[nrmse_valid] / mean_abs_y[nrmse_valid]
+        nrmse = float(np.nanmean(nrmse_vals))
+
+        # ND[0.5]: sum|y-ŷ| / sum|y| per item
+        sum_abs_diff = abs_diff.sum(axis=1)  # (N,)
+        sum_abs_y = np.abs(y_true.astype(np.float64)).sum(axis=1)  # (N,)
+        nd_valid = sum_abs_y > 0
+        nd_vals = np.full(N, np.nan)
+        if nd_valid.any():
+            nd_vals[nd_valid] = sum_abs_diff[nd_valid] / sum_abs_y[nd_valid]
+        nd = float(np.nanmean(nd_vals))
+
+        # ── MSIS: Mean Scaled Interval Score (alpha=0.05) ──
+        # GluonTS uses quantile(0.025) and quantile(0.975), which clip to
+        # q(0.1) and q(0.9) respectively via np.interp boundary behavior.
+        lower = y_pred_quantiles[:, q01_idx, :].astype(np.float64)  # (N, H)
+        upper = y_pred_quantiles[:, q09_idx, :].astype(np.float64)  # (N, H)
+        y_true_f64 = y_true.astype(np.float64)
+
+        alpha = 0.05
+        interval_width = upper - lower
+        penalty_lower = np.maximum(lower - y_true_f64, 0)
+        penalty_upper = np.maximum(y_true_f64 - upper, 0)
+        interval_score = interval_width + (2.0 / alpha) * (penalty_lower + penalty_upper)
+        is_mean_per_item = interval_score.mean(axis=1)  # (N,)
+
+        # ── Seasonal scales for MASE + MSIS ──
+        scales = np.empty(N)
+        for i in range(N):
+            past = y_past[i]
+            if len(past) <= seasonal_period:
+                if len(past) > 1:
+                    scales[i] = float(np.abs(np.diff(past)).mean())
+                else:
+                    scales[i] = np.nan
+            else:
+                scales[i] = float(
+                    np.abs(past[seasonal_period:] - past[:-seasonal_period]).mean()
+                )
+
+        valid_scale = (scales > 0) & ~np.isnan(scales)
+
+        # MASE
+        mase_vals = np.full(N, np.nan)
+        if valid_scale.any():
+            mase_vals[valid_scale] = mae_per_item[valid_scale] / scales[valid_scale]
+        mase = float(np.nanmean(mase_vals))
+
+        # MSIS
+        msis_vals = np.full(N, np.nan)
+        if valid_scale.any():
+            msis_vals[valid_scale] = is_mean_per_item[valid_scale] / scales[valid_scale]
+        msis = float(np.nanmean(msis_vals))
+
+        # MSE[mean] = MSE[0.5] for quantile models (QuantileForecast.mean → median)
+        mse_mean = mse
+
+        return {
+            "mean_weighted_sum_quantile_loss": crps,
+            "MASE[0.5]": mase,
+            "sMAPE[0.5]": smape,
+            "MAPE[0.5]": mape,
+            "MSE[0.5]": mse,
+            "MAE[0.5]": mae,
+            "RMSE[0.5]": rmse,
+            "NRMSE[0.5]": nrmse,
+            "ND[0.5]": nd,
+            "MSIS": msis,
+            "MSE[mean]": mse_mean,
+        }
+
     @staticmethod
     def get_seasonal_period(freq: str) -> int:
         """Get the standard seasonal period for a given frequency string.

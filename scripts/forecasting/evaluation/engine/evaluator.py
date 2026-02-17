@@ -558,6 +558,11 @@ class Evaluator:
     ) -> dict:
         """Evaluate a single dataset from config.
 
+        Uses fast vectorized metric computation, bypassing GluonTS
+        ``evaluate_forecasts()`` and ``QuantileForecast`` object creation.
+        This eliminates the primary CPU bottleneck (Python-level iteration
+        over thousands of forecast objects).
+
         Parameters
         ----------
         config : dict
@@ -568,50 +573,56 @@ class Evaluator:
         dict
             {dataset, model, WQL, MASE, n_series, elapsed_s, ...}
         """
-        from gluonts.ev.metrics import MASE, MeanWeightedSumQuantileLoss
-        from gluonts.model.evaluation import evaluate_forecasts
+        from .metrics import MetricRegistry
 
         ds_name = config["name"]
         prediction_length = config["prediction_length"]
         ds_start = time_module.time()
 
         logger.info(f"Loading dataset: {ds_name}")
-        _, test_data, pred_len, _ = load_dataset_from_config(
+        _, test_data, pred_len, dataset_freq = load_dataset_from_config(
             config, datasets_root=self.datasets_root
         )
 
-        n_series = len(test_data.input)
+        # Collect test data: inputs (context) and labels (ground truth)
+        inputs_list = []
+        labels_list = []
+        for inp, lbl in zip(test_data.input, test_data.label):
+            inputs_list.append(inp)
+            labels_list.append(lbl)
+
+        n_series = len(inputs_list)
         load_time = time_module.time() - ds_start
         logger.info(
             f"Generating forecasts: {ds_name} "
             f"({n_series} series, H={pred_len}, load={load_time:.1f}s)"
         )
 
+        # Extract context tensors and ground truth arrays
+        contexts = [torch.tensor(inp["target"], dtype=torch.float32) for inp in inputs_list]
+        y_past = [np.asarray(inp["target"], dtype=np.float32) for inp in inputs_list]
+        y_true = np.array(
+            [np.asarray(lbl["target"], dtype=np.float32)[:pred_len] for lbl in labels_list]
+        )  # (N, H)
+
+        # Batch GPU inference → (N, Q, H) numpy array
         forecast_start = time_module.time()
-        forecasts = generate_quantile_forecasts(
-            test_data.input,
-            self.forecaster,
+        y_pred_quantiles = self.forecaster.predict_batch(
+            contexts,
             prediction_length=pred_len,
             quantile_levels=self.quantile_levels,
             batch_size=self.batch_size,
             **predict_kwargs,
-        )
+        )  # (N, Q, H)
         forecast_time = time_module.time() - forecast_start
 
+        # Fast vectorized metric computation (no GluonTS overhead)
         logger.info(f"Computing metrics: {ds_name} (forecast={forecast_time:.1f}s)")
         metric_start = time_module.time()
-        metrics = (
-            evaluate_forecasts(
-                forecasts,
-                test_data=test_data,
-                metrics=[
-                    MASE(),
-                    MeanWeightedSumQuantileLoss(self.quantile_levels),
-                ],
-                batch_size=5000,
-            )
-            .reset_index(drop=True)
-            .to_dict(orient="records")
+        seasonal_period = MetricRegistry.get_seasonal_period(dataset_freq)
+        metrics = MetricRegistry.compute_chronos_metrics_fast(
+            y_pred_quantiles, y_true, y_past,
+            self.quantile_levels, seasonal_period,
         )
         metric_time = time_module.time() - metric_start
 
@@ -619,16 +630,15 @@ class Evaluator:
         result = {
             "dataset": ds_name,
             "model": self.forecaster.name,
-            **metrics[0],
+            "WQL": metrics["WQL"],
+            "MASE": metrics["MASE"],
             "n_series": n_series,
             "elapsed_s": round(total_elapsed, 1),
         }
 
-        # Rename to standard names
-        if "MASE[0.5]" in result:
-            result["MASE"] = result.pop("MASE[0.5]")
-        if "mean_weighted_sum_quantile_loss" in result:
-            result["WQL"] = result.pop("mean_weighted_sum_quantile_loss")
+        logger.debug(
+            f"  {ds_name}: forecast={forecast_time:.1f}s, metrics={metric_time:.1f}s"
+        )
 
         return result
 
