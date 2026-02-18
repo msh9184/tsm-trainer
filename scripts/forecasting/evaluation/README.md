@@ -94,56 +94,229 @@ Includes all `chronos_lite` datasets plus 10 additional datasets covering transp
 
 #### `chronos_i` — Chronos Benchmark I (In-Domain)
 
-The official in-domain benchmark from the Chronos paper:
-- **15 datasets** that were part of the training corpus.
-- Measures how well the model fits seen data distributions.
-- Aggregation: **Geometric mean of relative scores vs. Seasonal Naive** (lower = better; <1.0 means better than baseline).
+> **Paper**: [arXiv:2403.07815](https://arxiv.org/abs/2403.07815) (Chronos, TMLR 2024)
+> **Data**: `autogluon/chronos_datasets` on HuggingFace
+
+The official in-domain benchmark from the Chronos paper. These **15 datasets** were part of the training corpus — evaluates how well the model fits seen data distributions.
+
+**Protocol**:
+- Single evaluation window per dataset (`num_rolls=1`)
+- Quantile levels: {0.1, 0.2, ..., 0.9} (9 levels)
+- Aggregation: **Geometric mean of relative scores vs. Seasonal Naive** (< 1.0 = beats baseline)
+- Context: full series history up to the prediction window
+
+**Dataset Catalog (~97K total series)**:
+
+| # | Dataset | Domain | Freq | Series | H | Source |
+|---|---------|--------|------|-------:|--:|--------|
+| 1 | electricity_15min | Energy | 15T | 370 | 24 | UCI ML Repository |
+| 2 | monash_electricity_hourly | Energy | H | 321 | 24 | Monash Archive |
+| 3 | monash_electricity_weekly | Energy | W | 321 | 8 | Monash Archive |
+| 4 | monash_kdd_cup_2018 | Nature | H | 270 | 48 | Monash Archive |
+| 5 | m4_daily | Competition | D | 4,227 | 14 | M4 Competition |
+| 6 | m4_hourly | Competition | H | 414 | 48 | M4 Competition |
+| 7 | m4_monthly | Competition | M | 48,000 | 18 | M4 Competition |
+| 8 | m4_weekly | Competition | W | 359 | 13 | M4 Competition |
+| 9 | monash_pedestrian_counts | Transport | H | 66 | 48 | Monash Archive |
+| 10 | taxi_30min | Transport | 30T | 2,428 | 48 | NYC TLC |
+| 11 | uber_tlc_hourly | Transport | H | 262 | 24 | Uber TLC |
+| 12 | uber_tlc_daily | Transport | D | 262 | 7 | Uber TLC |
+| 13 | monash_rideshare | Transport | H | 2,340 | 24 | Monash Archive |
+| 14 | monash_temperature_rain | Nature | D | 32,072 | 30 | Monash Archive |
+| 15 | monash_london_smart_meters | Energy | 30T | 5,560 | 48 | Monash Archive |
+
+**Domain breakdown**: Energy (4), Transport (5), Competition (4), Nature (2)
 
 #### `chronos_ii` — Chronos Benchmark II (Zero-Shot)
 
-The official zero-shot benchmark from the Chronos-2 paper:
-- **27 datasets** NOT in the training corpus.
-- Measures generalization to unseen domains and frequencies.
-- Aggregation: **Geometric mean of relative scores vs. Seasonal Naive**.
+> **Paper**: [arXiv:2510.15821](https://arxiv.org/abs/2510.15821) (Chronos-2, 2025)
+> **Data**: `autogluon/chronos_datasets` + `autogluon/chronos_datasets_extra` on HuggingFace
+
+The official zero-shot benchmark. These **27 datasets** were NOT in the training corpus — evaluates generalization to unseen domains and frequencies.
+
+**Protocol**: Same as Benchmark I (single window, gmean vs Seasonal Naive)
+
+**Dataset Catalog (~191K total series)**:
+
+| # | Dataset | Domain | Freq | Series | H | Source |
+|---|---------|--------|------|-------:|--:|--------|
+| 1 | m4_quarterly | Competition | Q | 24,000 | 8 | M4 Competition |
+| 2 | m4_yearly | Competition | Y | 23,000 | 6 | M4 Competition |
+| 3 | m5 | Retail | D | 30,490 | 28 | M5 Competition |
+| 4 | dominick | Retail | D | 100,014 | 8 | Dominick's Grocery |
+| 5 | monash_m1_yearly | Competition | Y | 181 | 6 | Monash (M1) |
+| 6 | monash_m1_quarterly | Competition | Q | 203 | 8 | Monash (M1) |
+| 7 | monash_m1_monthly | Competition | M | 617 | 18 | Monash (M1) |
+| 8 | monash_m3_monthly | Competition | M | 1,428 | 18 | Monash (M3) |
+| 9 | monash_m3_yearly | Competition | Y | 645 | 6 | Monash (M3) |
+| 10 | monash_m3_quarterly | Competition | Q | 756 | 8 | Monash (M3) |
+| 11 | monash_traffic | Transport | H | 862 | 24 | Monash Archive |
+| 12 | monash_australian_electricity | Energy | 30T | 5 | 48 | Monash Archive |
+| 13 | ercot | Energy | H | 8 | 24 | ERCOT Texas |
+| 14 | monash_weather | Nature | D | 3,010 | 30 | Monash Archive |
+| 15 | ETTm | Energy | 15T | 14 | 24 | ETDataset |
+| 16 | ETTh | Energy | H | 14 | 24 | ETDataset |
+| 17 | exchange_rate | Finance | B | 8 | 30 | Lai et al. (2018) |
+| 18 | nn5 | Finance | D | 111 | 56 | NN5 Competition |
+| 19 | monash_nn5_weekly | Finance | W | 111 | 8 | Monash Archive |
+| 20 | monash_covid_deaths | Healthcare | D | 266 | 30 | Monash Archive |
+| 21 | monash_fred_md | Economics | M | 107 | 12 | Monash (FRED-MD) |
+| 22 | monash_tourism_monthly | Tourism | M | 366 | 24 | Monash Archive |
+| 23 | monash_tourism_quarterly | Tourism | Q | 427 | 8 | Monash Archive |
+| 24 | monash_tourism_yearly | Tourism | Y | 518 | 4 | Monash Archive |
+| 25 | monash_car_parts | Retail | M | 2,674 | 12 | Monash Archive |
+| 26 | monash_hospital | Healthcare | M | 767 | 12 | Monash Archive |
+| 27 | monash_cif_2016 | Banking | M | 72 | 12 | Monash Archive |
+
+**Domain breakdown**: Competition (8), Energy (4), Transport (1), Retail (3), Finance (3), Tourism (3), Nature (1), Healthcare (2), Economics (1), Banking (1)
+
+**Seasonal periods used for MASE scaling**:
+
+| Frequency | Period (m) | Meaning |
+|-----------|-----------|---------|
+| 15T / 30T | 96 / 48 | 1 day |
+| Hourly (H) | 24 | 1 day |
+| Daily (D) | 7 | 1 week |
+| Business-daily (B) | 5 | 1 week |
+| Weekly (W) | 52 | 1 year |
+| Monthly (M) | 12 | 1 year |
+| Quarterly (Q) | 4 | 1 year |
+| Yearly (Y/A) | 1 | Non-seasonal (Naive) |
 
 #### `chronos_full` — All Chronos Datasets
 
-Combined: Chronos I (15) + Chronos II (27) = **42 unique datasets**.
+Combined: Chronos I (15) + Chronos II (27) = **42 unique datasets** (~288K series).
 Use for final model evaluation before release.
 
 #### `gift_eval` — GIFT-Eval (Salesforce AI Research)
 
-> **Paper**: [arXiv:2410.10393](https://arxiv.org/abs/2410.10393)
+> **Paper**: [arXiv:2410.10393](https://arxiv.org/abs/2410.10393) (NeurIPS 2024 Datasets & Benchmarks)
+> **GitHub**: [SalesforceAIResearch/gift-eval](https://github.com/SalesforceAIResearch/gift-eval)
 > **Leaderboard**: [huggingface.co/spaces/Salesforce/GiftEval](https://huggingface.co/spaces/Salesforce/GiftEval)
-> **Requires**: `pip install gift-eval`
+> **Data**: `Salesforce/GiftEval` on HuggingFace Hub
+> **Requires**: `pip install gift-eval` (or clone + `pip install -e .`)
 
-Comprehensive multi-domain benchmark with 28 datasets (55 dataset/frequency combinations) evaluated across 3 forecast terms (short/medium/long), producing 97 task configurations.
+Comprehensive multi-domain benchmark with 28 datasets (55 dataset/frequency combinations) evaluated across 3 forecast terms (short/medium/long), producing **97 task configurations**. The primary ranking metric is **average CRPS rank** across all 97 tasks.
 
 | Property | Value |
 |----------|-------|
-| Datasets | 28 base, 97 configs |
-| Domains | 7 (Energy, Transport, Nature, Health, Sales, Web, Banking) |
-| Terms | Short, Medium, Long |
-| Quantiles | {0.1, 0.2, ..., 0.9} |
-| Evaluation | Non-overlapping rolling windows (max 20) |
-| Metrics | 11: CRPS, MSE, MAE, MASE, MAPE, sMAPE, MSIS, RMSE, NRMSE, ND, WQL |
-| Aggregation | Average rank / normalized scores |
-| Multivariate | Some tasks (channel-independent evaluation) |
+| Datasets | 28 base (55 dataset/freq combos), 97 task configs |
+| Domains | 7 (Econ/Finance, Energy, Healthcare, Nature, Sales, Transport, Web/CloudOps) |
+| Terms | Short (1x), Medium (10x), Long (15x) of base prediction length |
+| Quantiles | {0.1, 0.2, ..., 0.9} (9 levels) |
+| Test Split | Last 10% of each series (`TEST_SPLIT = 0.1`) |
+| Rolling Windows | Non-overlapping, max 20 (`MAX_WINDOW = 20`) |
+| Metrics | 11 per task (see below) |
+| Ranking | Average rank across 97 tasks (lower = better) |
+| Multivariate | 8 datasets (channel-independent evaluation) |
 
-**Representative baselines for comparison**:
-| Model | Type | Reference |
-|-------|------|-----------|
-| Chronos-2 (120M) | Foundation model | Amazon (2025) |
-| TimesFM (200M) | Foundation model | Google (2024) |
-| Moirai (311M) | Foundation model | Salesforce (2024) |
-| Naive / SeasonalNaive | Statistical baseline | — |
+**Evaluation Protocol Details**:
+
+1. **Test region**: Last 10% of the minimum series length in each dataset
+2. **Window count**: `windows = min(max(1, ceil(0.1 * min_length / pred_length)), 20)`. M4 datasets always use 1 window.
+3. **Prediction length**: Determined by frequency × term multiplier:
+
+| Frequency | Base H (M4) | Base H (Standard) | Short | Medium | Long |
+|-----------|:-----------:|:-----------------:|------:|-------:|-----:|
+| Yearly (A) | 6 | — | 6 | 60 | 90 |
+| Quarterly (Q) | 8 | — | 8 | 80 | 120 |
+| Monthly (M) | 18 | 12 | 12–18 | 120–180 | 180–270 |
+| Weekly (W) | 13 | 8 | 8–13 | 80–130 | 120–195 |
+| Daily (D) | 14 | 30 | 14–30 | 140–300 | 210–450 |
+| Hourly (H) | 48 | 48 | 48 | 480 | 720 |
+| Minutely (T) | — | 48 | 48 | 480 | 720 |
+| Secondly (S) | — | 60 | 60 | 600 | 900 |
+
+**11 Metrics (exact CSV column names)**:
+
+| # | Column Name | Display | Description |
+|---|-------------|---------|-------------|
+| 1 | `mean_weighted_sum_quantile_loss` | CRPS | WQL over 9 quantiles (primary ranking metric) |
+| 2 | `MASE[0.5]` | MASE | Mean Absolute Scaled Error (median forecast) |
+| 3 | `sMAPE[0.5]` | sMAPE | Symmetric Mean Absolute Percentage Error |
+| 4 | `MAPE[0.5]` | MAPE | Mean Absolute Percentage Error |
+| 5 | `MSE[0.5]` | MSE | Mean Squared Error (median forecast) |
+| 6 | `MAE[0.5]` | MAE | Mean Absolute Error (median forecast) |
+| 7 | `RMSE[mean]` | RMSE | Root Mean Squared Error (mean forecast) |
+| 8 | `NRMSE[mean]` | NRMSE | Normalized RMSE (mean forecast) |
+| 9 | `ND[0.5]` | ND | Normalized Deviation (median forecast) |
+| 10 | `MSIS` | MSIS | Mean Scaled Interval Score |
+| 11 | `MSE[mean]` | MSE* | Mean Squared Error (mean forecast) |
+
+**Dataset Catalog by Domain (28 datasets, 97 task configs)**:
+
+| Domain | Dataset | #Var | Frequencies | Terms | Configs |
+|--------|---------|-----:|-------------|-------|--------:|
+| **Econ/Finance** | m4_yearly | 1 | A | short | 1 |
+| | m4_quarterly | 1 | Q | short | 1 |
+| | m4_monthly | 1 | M | short | 1 |
+| | m4_weekly | 1 | W | short | 1 |
+| | m4_daily | 1 | D | short | 1 |
+| | m4_hourly | 1 | H | short | 1 |
+| **Energy** | electricity | 1 | 15T, H, D, W | short/med/long | 8 |
+| | ett1 | 7 | 15T, H, D, W | short/med/long | 8 |
+| | ett2 | 7 | 15T, H, D, W | short/med/long | 8 |
+| | solar | 1 | 10T, H, D, W | short/med/long | 8 |
+| **Healthcare** | covid_deaths | 1 | D | short | 1 |
+| | hospital | 1 | M | short | 1 |
+| | us_births | 1 | D, M, W | short | 3 |
+| **Nature** | jena_weather | 21 | 10T, H, D | short/med/long | 7 |
+| | kdd_cup_2018 | 1 | H, D | short/med/long | 4 |
+| | saugeenday | 1 | D, M, W | short | 3 |
+| | temperature_rain | 1 | D | short | 1 |
+| **Sales** | car_parts | 1 | M | short | 1 |
+| | hierarchical_sales | 1 | D, W | short | 2 |
+| | restaurant | 1 | D | short | 1 |
+| **Transport** | LOOP_SEATTLE | 1 | 5T, H, D | short/med/long | 7 |
+| | M_DENSE | 1 | H, D | short/med/long | 4 |
+| | SZ_TAXI | 1 | 15T, H | short/med/long | 4 |
+| **Web/CloudOps** | bitbrains_fast_storage | 2 | 5T, H | short/med/long | 4 |
+| | bitbrains_rnd | 2 | 5T, H | short/med/long | 4 |
+| | bizitobs_application | 2 | 10S | short/med/long | 3 |
+| | bizitobs_l2c | 7 | 5T, H | short/med/long | 6 |
+| | bizitobs_service | 2 | 10S | short/med/long | 3 |
+| | | | | **Total** | **97** |
+
+**Task distribution**: 55 short + 21 medium + 21 long = 97. M4 and low-frequency datasets have short-term only.
+
+**Leaderboard Top-15 (by avg CRPS Rank, 64 models total, Feb 2026)**:
+
+| Rank | Model | Type | Org | CRPS Rank | MASE Rank |
+|-----:|-------|------|-----|----------:|----------:|
+| 1 | TSOrchestra | Agentic | USC | 8.75 | 9.34 |
+| 2 | DeOSAlpha-TimeGPT | Zero-shot | Vencortex | 8.95 | 9.57 |
+| 3 | Credence | Agentic | ContinualIST | 10.32 | 11.38 |
+| 4 | TSOrchestra-test | Fine-tuned* | USC | 11.20 | 15.45 |
+| 5 | Samay | Agentic | Kairosity | 11.36 | 13.09 |
+| 6 | Synapse | Agentic | Google Cloud AI | 11.66 | 13.46 |
+| 7 | MoiraiAgent* | Agentic | Salesforce | 12.54 | 10.50 |
+| 8 | TimeCopilot | Agentic | — | 12.75 | 13.71 |
+| 9 | MoiraiAgent | Agentic | Salesforce | 12.77 | 11.25 |
+| **10** | **Chronos-2** | **Pretrained** | **AWS** | **15.21** | **14.64** |
+| 11 | PatchTST-FM-r1 | Zero-shot | IBM/RPI | 15.29 | 17.24 |
+| 12 | TiRex | Zero-shot | NX-AI | 15.50 | 18.73 |
+| 13 | TimesFM-2.5 | Zero-shot | Google | 17.19 | 17.59 |
+| 14 | Xihe-ultra | Zero-shot | Ant | 19.43 | 20.01 |
+| 15 | FlowState-9.1M | Zero-shot | IBM | 20.14 | 22.62 |
+
+*\*Asterisk = data leaking (used test data for training/selection)*
+
+**Key observation**: Top ranks are dominated by **agentic** models (LLM-based multi-step reasoning that selects and ensembles forecasters). Among **non-agentic, non-leaking pretrained/zero-shot** models:
+
+| Effective Rank | Model | CRPS Rank | MASE Rank |
+|:-:|-------|----------:|----------:|
+| 1 | **Chronos-2** | 15.21 | 14.64 |
+| 2 | PatchTST-FM-r1 | 15.29 | 17.24 |
+| 3 | TiRex | 15.50 | 18.73 |
+| 4 | TimesFM-2.5 | 17.19 | 17.59 |
+| 5 | Xihe-ultra | 19.43 | 20.01 |
 
 ```bash
 # Download data
 python utils/download_gift_eval.py \
     --output-dir /group-volume/ts-dataset/benchmarks/gift_eval/
 
-# Run evaluation
+# Run evaluation (~6-7 hr on 1x A100 bfloat16)
 python run_benchmark.py \
     --model-path /path/to/model \
     --benchmarks gift_eval \
@@ -579,6 +752,66 @@ Geometric mean of per-dataset relative scores vs. Seasonal Naive baseline.
 | Chronos-Bolt Tiny | 3M | 0.668 | 0.845 |
 | Chronos-T5 Mini | 20M | 0.689 | 0.841 |
 | Chronos-T5 Tiny | 8M | 0.711 | 0.870 |
+
+### Chronos-2 vs Foundation Models (from Chronos-2 Paper, arXiv:2510.15821)
+
+Win Rate (%) and Skill Score (%) vs. Seasonal Naive baseline.
+Higher is better. Win Rate > 50% = beats more models than it loses to.
+
+**Chronos Benchmark II — WQL (27 datasets)**:
+
+| Model | Win Rate (%) | Skill Score (%) |
+|-------|:------------:|:---------------:|
+| **Chronos-2 (120M)** | **79.8** | **46.6** |
+| TiRex (35M) | 70.4 | 41.7 |
+| TimesFM-2.5 (200M) | 70.0 | 42.4 |
+| Toto-1.0 (151M) | 60.9 | 41.9 |
+| Moirai-2.0 (305M) | 56.0 | 40.9 |
+| Chronos-Bolt (205M) | 49.4 | 39.3 |
+| TabPFN-TS (11M) | 46.3 | 32.6 |
+| COSMIC | 42.8 | 36.7 |
+| Seasonal Naive | 10.1 | 0.0 |
+
+**Chronos Benchmark II — MASE (27 datasets)**:
+
+| Model | Win Rate (%) | Skill Score (%) |
+|-------|:------------:|:---------------:|
+| **Chronos-2 (120M)** | **81.5** | **26.5** |
+| TimesFM-2.5 (200M) | 71.6 | 23.3 |
+| TiRex (35M) | 67.1 | 22.2 |
+| Toto-1.0 (151M) | 58.0 | 22.3 |
+| Moirai-2.0 (305M) | 53.5 | 19.8 |
+| Chronos-Bolt (205M) | 50.6 | 20.4 |
+| Seasonal Naive | 13.8 | 0.0 |
+
+**GIFT-Eval — WQL (97 tasks)**:
+
+| Model | Win Rate (%) | Skill Score (%) |
+|-------|:------------:|:---------------:|
+| **Chronos-2 (120M)** | **81.9** | **51.4** |
+| TimesFM-2.5 (200M) | 77.5 | 51.0 |
+| TiRex (35M) | 76.5 | 50.2 |
+| Toto-1.0 (151M) | 67.4 | 48.6 |
+| Moirai-2.0 (305M) | 64.4 | 48.4 |
+| COSMIC | 56.4 | 44.5 |
+| Chronos-Bolt (205M) | 53.8 | 42.6 |
+
+**fev-bench — SQL (100 tasks)**:
+
+| Model | Win Rate (%) | Skill Score (%) | Runtime (s) |
+|-------|:------------:|:---------------:|:-----------:|
+| **Chronos-2 (120M)** | **90.7** | **47.3** | 3.6 |
+| TiRex (35M) | 80.8 | 42.6 | 1.4 |
+| TimesFM-2.5 (200M) | 75.9 | 42.3 | 16.9 |
+| Toto-1.0 (151M) | 66.6 | 40.7 | 90.7 |
+| Moirai-2.0 (305M) | 61.1 | 39.3 | 2.5 |
+| Chronos-Bolt (205M) | 60.3 | 38.9 | 1.0 |
+| TabPFN-TS (11M) | 59.3 | 39.6 | 305.5 |
+| Seasonal Naive | 14.5 | 0.0 | 2.3 |
+
+**Metric relationship** (from Chronos-2 paper):
+- Skill Score S and Geometric Mean Relative Error G: `G = 1 - S/100`
+- Win Rate W and Average Rank R (over N models): `R = 1 + (1 - W/100)(N - 1)`
 
 ---
 
