@@ -703,7 +703,7 @@ results/experiments/
 | `chronos_i` | 15 | ~30 min | ~50 min | ~5 hr |
 | `chronos_ii` | 27 | ~60 min | ~90 min | ~10 hr |
 | `chronos_full` | 42 | ~90 min | ~120 min | ~12 hr |
-| `gift_eval` | ~98 | ~2 hr | ~3 hr | ~24 hr |
+| `gift_eval` | ~98 | ~6-7 hr | ~10 hr | ~48+ hr |
 | `fev_bench` | 100 | ~3 hr | ~5 hr | ~30 hr |
 | `ltsf` | 36 | ~30 min | ~45 min | ~4 hr |
 

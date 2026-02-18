@@ -16,7 +16,7 @@
 # Metrics: CRPS, MASE, WQL, sMAPE (11 metrics per configuration)
 # Aggregation: Average rank / normalized scores
 #
-# Expected time: ~2 hr (A100 GPU)
+# Expected time: ~6-7 hr (A100 GPU, bfloat16, sequential)
 #
 # NOTE: This benchmark uses the gift-eval library adapter, not the
 # standard Chronos-style YAML evaluator. The config below documents
