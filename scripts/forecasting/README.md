@@ -257,7 +257,7 @@ python evaluation/run_benchmark.py \
 | Chronos Bench I | `chronos_i` | 15 | WQL, MASE | ~30 min |
 | Chronos Bench II | `chronos_ii` | 27 | WQL, MASE | ~60 min |
 | Chronos Full | `chronos_full` | 42 | WQL, MASE | ~90 min |
-| GIFT-Eval | `gift_eval` | ~98 | CRPS, MASE, WQL, sMAPE, +7 | ~6-7 hr |
+| GIFT-Eval | `gift_eval` | 97 | CRPS, MASE, WQL, sMAPE, +7 | ~6-7 hr |
 | fev-bench | `fev_bench` | 100 | SQL, Win Rate, Skill Score | ~3 hr |
 | LTSF | `ltsf` | 36 | MSE, MAE | ~30 min |
 

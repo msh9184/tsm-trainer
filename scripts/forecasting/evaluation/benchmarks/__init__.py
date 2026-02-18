@@ -5,7 +5,7 @@
 #
 #   base.py          — BenchmarkAdapter abstract base class
 #   chronos_bench.py — Chronos Benchmark I (in-domain) & II (zero-shot)
-#   gift_eval.py     — GIFT-Eval (~98 tasks, 23 datasets)
+#   gift_eval.py     — GIFT-Eval (97 tasks, 28 datasets)
 #   fev_bench.py     — fev-bench (100 tasks, covariates)
 #   ltsf.py          — LTSF-Benchmark (ETT, Weather, Traffic, Electricity)
 

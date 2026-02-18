@@ -8,7 +8,7 @@
 # Leaderboard: https://huggingface.co/spaces/Salesforce/GiftEval
 #
 # Protocol:
-#   - 23 base datasets, ~98 task configurations
+#   - 28 datasets (55 dataset/freq combos), 97 task configurations
 #   - TEST_SPLIT = 0.1 (last 10% of each series)
 #   - Non-overlapping rolling windows (MAX_WINDOW = 20)
 #   - Quantiles: {0.1, 0.2, ..., 0.9}

@@ -1,7 +1,7 @@
 """GIFT-Eval benchmark adapter.
 
 GIFT-Eval (General Time Series Forecasting Model Evaluation) is a comprehensive
-benchmark from Salesforce AI Research with ~98 task configurations across
+benchmark from Salesforce AI Research with 97 task configurations across
 23+ base datasets, 7 domains, and 10 frequencies.
 
 Protocol:
@@ -395,7 +395,7 @@ class GiftEvalAdapter(BenchmarkAdapter):
         Returns
         -------
         pd.DataFrame
-            ~98 rows with 15 columns matching leaderboard format.
+            97 rows with 15 columns matching leaderboard format.
         """
         import torch
 

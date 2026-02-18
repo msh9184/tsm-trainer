@@ -39,7 +39,7 @@ Supported benchmarks:
     chronos_lite     — Chronos Lite (5 datasets, ~3 min on A100)
     chronos_extended — Chronos Extended (15 datasets, ~15 min on A100)
     chronos_full     — Chronos Full (42 datasets, ~90 min on A100)
-    gift_eval        — GIFT-Eval (~98 configs, requires gift-eval library)
+    gift_eval        — GIFT-Eval (97 configs, requires gift-eval library)
     fev_bench        — fev-bench (100 tasks, requires fev library)
     ltsf             — LTSF-Benchmark (9 datasets, MSE/MAE on z-normalized)
     lite             — Alias for chronos_lite
@@ -292,7 +292,7 @@ def get_adapter(benchmark_name: str, args):
         chronos_lite  — Quick validation subset (5 datasets, ~3 min)
         chronos_extended — Thorough validation (15 datasets, ~15 min)
         chronos_full  — All Chronos datasets combined (42 datasets)
-        gift_eval    — GIFT-Eval (~98 tasks, requires gift-eval library)
+        gift_eval    — GIFT-Eval (97 tasks, requires gift-eval library)
         fev_bench    — fev-bench (100 tasks, requires fev library)
         ltsf         — LTSF-Benchmark (9 datasets, MSE/MAE, requires CSV data)
     """

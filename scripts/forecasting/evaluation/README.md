@@ -63,7 +63,7 @@ python run_benchmark.py \
 
 | Benchmark | Config | Tasks | Primary Metrics | Description | Est. Time (A100) |
 |-----------|--------|-------|-----------------|-------------|-------------------|
-| `gift_eval` | `gift-eval.yaml` | ~98 | CRPS, MASE, WQL | GIFT-Eval: 23 datasets × 3 terms | ~2 hr |
+| `gift_eval` | `gift-eval.yaml` | 97 | CRPS, MASE, WQL | GIFT-Eval: 28 datasets × 3 terms | ~6-7 hr |
 | `fev_bench` | `fev-bench.yaml` | 100 | SQL, Win Rate | fev-bench: 96 datasets, 46 with covariates | ~3 hr |
 | `ltsf` | `ltsf.yaml` | 36 | MSE, MAE | LTSF: 9 datasets × 4 horizons | ~30 min |
 
@@ -117,11 +117,11 @@ Use for final model evaluation before release.
 > **Leaderboard**: [huggingface.co/spaces/Salesforce/GiftEval](https://huggingface.co/spaces/Salesforce/GiftEval)
 > **Requires**: `pip install gift-eval`
 
-Comprehensive multi-domain benchmark with 23 base datasets evaluated across 3 forecast terms (short/medium/long), producing ~98 task configurations.
+Comprehensive multi-domain benchmark with 28 datasets (55 dataset/frequency combinations) evaluated across 3 forecast terms (short/medium/long), producing 97 task configurations.
 
 | Property | Value |
 |----------|-------|
-| Datasets | 23 base, ~98 configs |
+| Datasets | 28 base, 97 configs |
 | Domains | 7 (Energy, Transport, Nature, Health, Sales, Web, Banking) |
 | Terms | Short, Medium, Long |
 | Quantiles | {0.1, 0.2, ..., 0.9} |
@@ -703,7 +703,7 @@ results/experiments/
 | `chronos_i` | 15 | ~30 min | ~50 min | ~5 hr |
 | `chronos_ii` | 27 | ~60 min | ~90 min | ~10 hr |
 | `chronos_full` | 42 | ~90 min | ~120 min | ~12 hr |
-| `gift_eval` | ~98 | ~6-7 hr | ~10 hr | ~48+ hr |
+| `gift_eval` | 97 | ~6-7 hr | ~10 hr | ~48+ hr |
 | `fev_bench` | 100 | ~3 hr | ~5 hr | ~30 hr |
 | `ltsf` | 36 | ~30 min | ~45 min | ~4 hr |
 

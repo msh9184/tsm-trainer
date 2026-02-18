@@ -195,7 +195,7 @@ Wraps each `Chronos2EncoderBlock.forward()` with `torch.utils.checkpoint.checkpo
 | **Chronos Extended** | 15 | WQL, MASE | Probabilistic | Thorough validation (~15 min) |
 | **Chronos Bench I** | 15 | WQL, MASE | Probabilistic | In-domain evaluation (paper) |
 | **Chronos Bench II** | 27 | WQL, MASE | Probabilistic | Zero-shot evaluation (paper) |
-| **GIFT-Eval** | ~98 | CRPS, MASE, WQL, sMAPE + 7 more | Probabilistic | Multi-domain comprehensive eval |
+| **GIFT-Eval** | 97 | CRPS, MASE, WQL, sMAPE + 7 more | Probabilistic | Multi-domain comprehensive eval |
 | **fev-bench** | 100 | SQL, Win Rate, Skill Score | Probabilistic | Covariate-capable evaluation |
 | **LTSF** | 36 | MSE, MAE | Point (median) | Cross-comparison with supervised baselines |
 
