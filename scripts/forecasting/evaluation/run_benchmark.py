@@ -374,22 +374,24 @@ def get_adapter(benchmark_name: str, args):
         )
     elif benchmark_name == "gift_eval":
         from benchmarks.gift_eval import GiftEvalAdapter
+        gift_data = args.gift_eval_data or args.datasets_root
         return GiftEvalAdapter(
-            data_dir=args.gift_eval_data,
+            data_dir=gift_data,
             batch_size=args.batch_size,
         )
     elif benchmark_name == "fev_bench":
         from benchmarks.fev_bench import FevBenchAdapter
+        fev_data = args.fev_data or args.datasets_root
         return FevBenchAdapter(
-            data_dir=args.fev_data,
+            data_dir=fev_data,
             batch_size=args.batch_size,
         )
     elif benchmark_name == "ltsf":
         from benchmarks.ltsf import LTSFAdapter
-        ltsf_data = getattr(args, "ltsf_data", None)
+        ltsf_data = getattr(args, "ltsf_data", None) or args.datasets_root
         if not ltsf_data:
             raise ValueError(
-                "LTSF benchmark requires --ltsf-data argument "
+                "LTSF benchmark requires --ltsf-data or --datasets-root argument "
                 "pointing to directory with LTSF CSV files."
             )
         return LTSFAdapter(
