@@ -619,6 +619,7 @@ python run_benchmark.py \
 > **Note**: When `--model-path` points to a `.safetensors` file, the framework automatically
 > locates `config.json` in the same directory and creates a temporary loading directory.
 > The model name in reports will reflect the checkpoint filename (e.g., `model-step=024000-...`).
+> If `config.json` is in a different location, use `--config-path /path/to/config.json`.
 
 ### 4. View Results
 
@@ -709,6 +710,7 @@ Optional:
   --device DEVICE          cuda, cuda:0, cpu (default: cuda)
   --torch-dtype DTYPE      float32, bfloat16 (default: float32)
   --batch-size N           Inference batch size (default: 32)
+  --config-path PATH       Explicit config.json path (for .safetensors with separate config)
   --seed N                 Random seed for reproducibility (default: 42)
   --dry-run                Check data/model availability without running evaluation
   --resume                 Resume interrupted evaluation from partial results
