@@ -220,11 +220,14 @@ class Chronos2Forecaster(BaseForecaster):
         - **Checkpoint directory**: ``".../checkpoint-31000"``
           (must contain ``config.json`` + ``model.safetensors``)
         - **Safetensors file**: ``".../best_checkpoints/model-step=024000-*.safetensors"``
-          (``config.json`` must exist in the same directory)
+          (``config.json`` must exist in the same directory, or pass ``config_path``)
     device : str
         Device for inference (e.g., "cuda", "cuda:0", "cpu").
     torch_dtype : str or torch.dtype
         Model data type (e.g., "float32", "bfloat16").
+    config_path : str or Path, optional
+        Explicit path to ``config.json``. If not provided, auto-detected
+        from the same directory as the ``.safetensors`` file.
     """
 
     def __init__(
@@ -232,6 +235,7 @@ class Chronos2Forecaster(BaseForecaster):
         model_path: str,
         device: str = "cuda",
         torch_dtype: str | torch.dtype = "float32",
+        config_path: str | Path | None = None,
     ):
         from chronos import Chronos2Pipeline
 
@@ -242,7 +246,7 @@ class Chronos2Forecaster(BaseForecaster):
         self._device = device
 
         # Resolve .safetensors file paths to a HF-compatible directory
-        resolved_path, self._tmp_dir = self._resolve_model_path(model_path)
+        resolved_path, self._tmp_dir = self._resolve_model_path(model_path, config_path)
 
         # Use Chronos2Pipeline directly (not BaseChronosPipeline) to avoid
         # dispatch failure when config.json lacks chronos_pipeline_class.
@@ -270,7 +274,10 @@ class Chronos2Forecaster(BaseForecaster):
             shutil.rmtree(self._tmp_dir, ignore_errors=True)
 
     @staticmethod
-    def _resolve_model_path(model_path: str) -> tuple[str, Path | None]:
+    def _resolve_model_path(
+        model_path: str,
+        config_path: str | Path | None = None,
+    ) -> tuple[str, Path | None]:
         """Resolve model path, handling direct .safetensors file references.
 
         HuggingFace ``from_pretrained()`` expects a directory containing
@@ -283,6 +290,9 @@ class Chronos2Forecaster(BaseForecaster):
         ----------
         model_path : str
             Original model path from CLI.
+        config_path : str or Path, optional
+            Explicit path to ``config.json``. When provided, this config is
+            used instead of auto-detecting from the safetensors directory.
 
         Returns
         -------
@@ -296,23 +306,29 @@ class Chronos2Forecaster(BaseForecaster):
             return model_path, None
 
         if path.suffix == ".safetensors":
-            config_path = path.parent / "config.json"
-            if not config_path.exists():
+            # Resolve config.json: explicit path > same directory auto-detect
+            if config_path is not None:
+                resolved_config = Path(config_path)
+            else:
+                resolved_config = path.parent / "config.json"
+
+            if not resolved_config.exists():
                 raise FileNotFoundError(
-                    f"config.json not found in {path.parent}. "
+                    f"config.json not found at {resolved_config}. "
                     f"HuggingFace from_pretrained() requires config.json "
-                    f"alongside the model weights."
+                    f"alongside the model weights. Use --config-path to "
+                    f"specify an explicit path."
                 )
 
             import tempfile
 
             tmp_dir = Path(tempfile.mkdtemp(prefix="tsm-eval-"))
-            (tmp_dir / "config.json").symlink_to(config_path.resolve())
+            (tmp_dir / "config.json").symlink_to(resolved_config.resolve())
             (tmp_dir / "model.safetensors").symlink_to(path.resolve())
 
             logger.info(
                 f"Resolved .safetensors file to temp directory:\n"
-                f"  config.json    -> {config_path}\n"
+                f"  config.json    -> {resolved_config}\n"
                 f"  model.safetensors -> {path.name}"
             )
             return str(tmp_dir), tmp_dir
@@ -363,6 +379,7 @@ class ChronosBoltForecaster(BaseForecaster):
         model_path: str,
         device: str = "cuda",
         torch_dtype: str | torch.dtype = "float32",
+        config_path: str | Path | None = None,
     ):
         from chronos import BaseChronosPipeline
 
@@ -372,7 +389,7 @@ class ChronosBoltForecaster(BaseForecaster):
         self._model_path = model_path
         self._device = device
 
-        resolved_path, self._tmp_dir = Chronos2Forecaster._resolve_model_path(model_path)
+        resolved_path, self._tmp_dir = Chronos2Forecaster._resolve_model_path(model_path, config_path)
         self._pipeline = BaseChronosPipeline.from_pretrained(
             resolved_path, device_map=device, torch_dtype=torch_dtype
         )

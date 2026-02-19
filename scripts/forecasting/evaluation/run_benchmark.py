@@ -292,6 +292,7 @@ def load_forecaster(args):
 
     model_path = args.model_path
     device = resolve_device(args.device)
+    config_path = getattr(args, "config_path", None)
 
     # Validate model path
     model_warnings = validate_model_path(model_path)
@@ -305,6 +306,7 @@ def load_forecaster(args):
             model_path=model_path,
             device=device,
             torch_dtype=args.torch_dtype,
+            config_path=config_path,
         )
     else:
         logger.info(f"Loading Chronos-2 model: {model_path} (device={device})")
@@ -312,6 +314,7 @@ def load_forecaster(args):
             model_path=model_path,
             device=device,
             torch_dtype=args.torch_dtype,
+            config_path=config_path,
         )
 
 
@@ -1093,6 +1096,14 @@ def parse_args():
                         help="Model dtype: float32, bfloat16 (default: float32)")
     parser.add_argument("--batch-size", type=int, default=32,
                         help="Inference batch size (default: 32)")
+    parser.add_argument(
+        "--config-path", type=str, default=None,
+        help=(
+            "Explicit path to config.json for the model. "
+            "Only needed when using --model-path with a .safetensors file "
+            "and config.json is not in the same directory."
+        ),
+    )
 
     # Data settings
     parser.add_argument(
