@@ -233,7 +233,7 @@ class Chronos2Forecaster(BaseForecaster):
         device: str = "cuda",
         torch_dtype: str | torch.dtype = "float32",
     ):
-        from chronos import BaseChronosPipeline
+        from chronos import Chronos2Pipeline
 
         if isinstance(torch_dtype, str):
             torch_dtype = getattr(torch, torch_dtype)
@@ -243,7 +243,13 @@ class Chronos2Forecaster(BaseForecaster):
 
         # Resolve .safetensors file paths to a HF-compatible directory
         resolved_path, self._tmp_dir = self._resolve_model_path(model_path)
-        self._pipeline = BaseChronosPipeline.from_pretrained(
+
+        # Use Chronos2Pipeline directly (not BaseChronosPipeline) to avoid
+        # dispatch failure when config.json lacks chronos_pipeline_class.
+        # Training-saved configs may omit this field, causing the base class
+        # to fall back to the old ChronosPipeline (T5) which can't parse
+        # Chronos-2 config fields like input_patch_size.
+        self._pipeline = Chronos2Pipeline.from_pretrained(
             resolved_path, device_map=device, torch_dtype=torch_dtype
         )
 
