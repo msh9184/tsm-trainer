@@ -536,39 +536,89 @@ python run_benchmark.py \
 
 ### 3. Run Evaluation
 
-#### Option A: GPU Evaluation (Recommended)
+`--model-path` accepts three formats:
+- **HuggingFace model ID**: `amazon/chronos-2`
+- **Checkpoint directory**: `.../checkpoint-31000` (contains `config.json` + `model.safetensors`)
+- **Safetensors file**: `.../best_checkpoints/model-step=024000-*.safetensors` (resolves `config.json` from same directory)
+
+#### Chronos Benchmarks (Chronos-style YAML, Arrow datasets)
 
 ```bash
+# Lite benchmark — quick validation (~3 min on A100)
 python run_benchmark.py \
-    --model-path /path/to/chronos-2 \
+    --model-path /group-volume/model/timeseries/models--amazon--chronos-2/snapshots/<hash> \
     --benchmarks chronos_lite \
     --datasets-root /group-volume/ts-dataset/benchmarks/chronos/ \
-    --output-dir results/experiments/ \
-    --device cuda \
-    --torch-dtype bfloat16 \
-    --batch-size 32
+    --device cuda --torch-dtype bfloat16 --batch-size 32
+
+# Chronos Bench I — in-domain, 15 datasets (~30 min)
+python run_benchmark.py \
+    --model-path /group-volume/model/timeseries/models--amazon--chronos-2/snapshots/<hash> \
+    --benchmarks chronos_i \
+    --datasets-root /group-volume/ts-dataset/benchmarks/chronos/ \
+    --device cuda --torch-dtype bfloat16 --seed 42
+
+# Chronos Bench II — zero-shot, 27 datasets (~60 min)
+python run_benchmark.py \
+    --model-path /group-volume/model/timeseries/models--amazon--chronos-2/snapshots/<hash> \
+    --benchmarks chronos_ii \
+    --datasets-root /group-volume/ts-dataset/benchmarks/chronos/ \
+    --device cuda --torch-dtype bfloat16 --seed 42 --verbose
+
+# CPU fallback (no GPU required — significantly slower)
+python run_benchmark.py \
+    --model-path /group-volume/model/timeseries/models--amazon--chronos-2/snapshots/<hash> \
+    --benchmarks chronos_lite \
+    --datasets-root /group-volume/ts-dataset/benchmarks/chronos/ \
+    --device cpu --torch-dtype float32
 ```
 
-#### Option B: Multiple Benchmarks
+#### GIFT-Eval (gift-eval library, HuggingFace data)
 
 ```bash
+# GIFT-Eval — 97 tasks, 28 datasets × 3 terms (~6-7 hr on A100)
 python run_benchmark.py \
-    --model-path /path/to/chronos-2 \
+    --model-path /group-volume/model/timeseries/models--amazon--chronos-2/snapshots/<hash> \
+    --benchmarks gift_eval \
+    --gift-eval-data /group-volume/ts-dataset/benchmarks/gift_eval/ \
+    --device cuda --torch-dtype bfloat16 --batch-size 512 --seed 42 --verbose
+```
+
+#### Evaluating Your Trained Models
+
+```bash
+# From a HuggingFace Trainer checkpoint directory
+python run_benchmark.py \
+    --model-path /group-volume/workspace/sunghwan.mun/mygit3/tsm-trainer/outputs/chronos2-base-stage1/checkpoint-31400 \
+    --benchmarks chronos_lite \
+    --datasets-root /group-volume/ts-dataset/benchmarks/chronos/ \
+    --device cuda --torch-dtype bfloat16 --seed 42
+
+# From a metric-encoded best checkpoint (.safetensors file directly)
+python run_benchmark.py \
+    --model-path /group-volume/workspace/sunghwan.mun/mygit3/tsm-trainer/outputs/chronos2-base-stage1/best_checkpoints/model-step=024000-wql=0.0841-mase=0.9782-composite=0.4418.safetensors \
+    --benchmarks chronos_ii \
+    --datasets-root /group-volume/ts-dataset/benchmarks/chronos/ \
+    --device cuda --torch-dtype bfloat16 --seed 42 --verbose
+
+# Trained model on GIFT-Eval
+python run_benchmark.py \
+    --model-path /group-volume/workspace/sunghwan.mun/mygit3/tsm-trainer/outputs/chronos2-base-stage1/best_checkpoints/model-step=024000-wql=0.0841-mase=0.9782-composite=0.4418.safetensors \
+    --benchmarks gift_eval \
+    --gift-eval-data /group-volume/ts-dataset/benchmarks/gift_eval/ \
+    --device cuda --torch-dtype bfloat16 --batch-size 512 --seed 42
+
+# Multiple benchmarks in one run
+python run_benchmark.py \
+    --model-path .../outputs/chronos2-base-stage1/checkpoint-31400 \
     --benchmarks chronos_i chronos_ii \
     --datasets-root /group-volume/ts-dataset/benchmarks/chronos/ \
-    --output-dir results/experiments/ \
-    --device cuda --torch-dtype bfloat16
+    --device cuda --torch-dtype bfloat16 --seed 42
 ```
 
-#### Option C: Full Evaluation Suite
-
-```bash
-python run_benchmark.py \
-    --model-path /path/to/chronos-2 \
-    --benchmarks chronos_full \
-    --datasets-root /group-volume/ts-dataset/benchmarks/chronos/ \
-    --device cuda --torch-dtype bfloat16
-```
+> **Note**: When `--model-path` points to a `.safetensors` file, the framework automatically
+> locates `config.json` in the same directory and creates a temporary loading directory.
+> The model name in reports will reflect the checkpoint filename (e.g., `model-step=024000-...`).
 
 ### 4. View Results
 

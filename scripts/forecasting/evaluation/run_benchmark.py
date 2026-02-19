@@ -33,6 +33,13 @@ Usage:
         --datasets-root /path/to/local/eval_datasets/ \
         --device cpu --torch-dtype float32
 
+    # Evaluate a specific best checkpoint (.safetensors file)
+    python run_benchmark.py \
+        --model-path /path/to/best_checkpoints/model-step=024000-wql=0.0841-mase=0.9782-composite=0.4418.safetensors \
+        --benchmarks lite \
+        --datasets-root /path/to/local/eval_datasets/ \
+        --device cuda --torch-dtype bfloat16
+
 Supported benchmarks:
     chronos_i        — Chronos Benchmark I (15 in-domain datasets)
     chronos_ii       — Chronos Benchmark II (27 zero-shot datasets)
@@ -146,8 +153,13 @@ def resolve_device(requested: str) -> str:
 def validate_model_path(model_path: str) -> list[str]:
     """Validate model path before loading.
 
-    Checks that the model directory exists and contains expected config files.
-    Returns list of warnings (empty = all good).
+    Checks that the model directory (or .safetensors file) exists and contains
+    expected config files. Returns list of warnings (empty = all good).
+
+    Supports three model path formats:
+    - HuggingFace model ID (e.g., "amazon/chronos-2")
+    - Local directory with config.json + model.safetensors
+    - Direct .safetensors file path (config.json must be in same directory)
     """
     warnings = []
     path = Path(model_path)
@@ -156,8 +168,18 @@ def validate_model_path(model_path: str) -> list[str]:
         # Could be a HuggingFace model ID — skip local validation
         return []
 
+    # Direct .safetensors file path — validate config.json in same directory
+    if path.is_file() and path.suffix == ".safetensors":
+        config_path = path.parent / "config.json"
+        if not config_path.exists():
+            warnings.append(
+                f"config.json not found in {path.parent} "
+                f"(required alongside .safetensors file)"
+            )
+        return warnings
+
     if not path.is_dir():
-        warnings.append(f"Model path is not a directory: {path}")
+        warnings.append(f"Model path is not a directory or .safetensors file: {path}")
         return warnings
 
     # Check for expected config files
@@ -180,46 +202,60 @@ def validate_model_path(model_path: str) -> list[str]:
 
 
 def get_model_info(model_path: str) -> dict:
-    """Extract model metadata from config files."""
+    """Extract model metadata from config files.
+
+    Handles both directory paths and direct .safetensors file paths.
+    """
     info = {"path": model_path}
     path = Path(model_path)
 
-    if path.exists() and path.is_dir():
+    # Resolve config and weight file locations
+    if path.is_file() and path.suffix == ".safetensors":
+        config_path = path.parent / "config.json"
+        safetensors_files = [path]
+        info["checkpoint_file"] = path.name
+    elif path.exists() and path.is_dir():
         config_path = path / "config.json"
-        if config_path.exists():
-            try:
-                with open(config_path) as f:
-                    config = json.load(f)
-                info["model_type"] = config.get("model_type", "unknown")
-                info["hidden_size"] = config.get("hidden_size") or config.get("d_model")
-                info["num_layers"] = config.get("num_hidden_layers") or config.get("num_layers")
-                info["num_heads"] = config.get("num_attention_heads") or config.get("num_heads")
-            except Exception:
-                pass
-
-        # Count parameters from safetensors metadata
         safetensors_files = list(path.glob("*.safetensors"))
-        if safetensors_files:
-            try:
-                from safetensors import safe_open
-                total_params = 0
-                for sf in safetensors_files:
-                    with safe_open(str(sf), framework="pt") as f:
-                        for key in f.keys():
-                            tensor = f.get_tensor(key)
-                            total_params += tensor.numel()
-                info["total_params"] = total_params
-                info["total_params_m"] = round(total_params / 1e6, 1)
-            except Exception:
-                pass
+    else:
+        return info
 
-        # Get total size on disk
+    if config_path.exists():
+        try:
+            with open(config_path) as f:
+                config = json.load(f)
+            info["model_type"] = config.get("model_type", "unknown")
+            info["hidden_size"] = config.get("hidden_size") or config.get("d_model")
+            info["num_layers"] = config.get("num_hidden_layers") or config.get("num_layers")
+            info["num_heads"] = config.get("num_attention_heads") or config.get("num_heads")
+        except Exception:
+            pass
+
+    # Count parameters from safetensors metadata
+    if safetensors_files:
+        try:
+            from safetensors import safe_open
+            total_params = 0
+            for sf in safetensors_files:
+                with safe_open(str(sf), framework="pt") as f:
+                    for key in f.keys():
+                        tensor = f.get_tensor(key)
+                        total_params += tensor.numel()
+            info["total_params"] = total_params
+            info["total_params_m"] = round(total_params / 1e6, 1)
+        except Exception:
+            pass
+
+    # Get total size on disk
+    if path.is_dir():
         total_size = sum(
             f.stat().st_size
             for f in path.rglob("*")
             if f.is_file()
         )
         info["disk_size_gb"] = round(total_size / (1024 ** 3), 2)
+    elif path.is_file():
+        info["disk_size_gb"] = round(path.stat().st_size / (1024 ** 3), 2)
 
     return info
 
@@ -1021,7 +1057,12 @@ def parse_args():
     # Required
     parser.add_argument(
         "--model-path", type=str, required=True,
-        help="Path to model checkpoint or HuggingFace model ID",
+        help=(
+            "Path to model checkpoint directory, HuggingFace model ID, "
+            "or direct .safetensors file path. "
+            "Examples: amazon/chronos-2, ./checkpoint-31000, "
+            "./best_checkpoints/model-step=024000-*.safetensors"
+        ),
     )
     parser.add_argument(
         "--benchmarks", nargs="+", required=True,

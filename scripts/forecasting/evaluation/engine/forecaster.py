@@ -212,7 +212,15 @@ class Chronos2Forecaster(BaseForecaster):
     Parameters
     ----------
     model_path : str
-        Path to local checkpoint directory or HuggingFace model ID.
+        Path to local checkpoint directory, HuggingFace model ID, or a
+        direct path to a ``.safetensors`` weight file.
+
+        Accepted formats:
+        - **HF model ID**: ``"amazon/chronos-2"``
+        - **Checkpoint directory**: ``".../checkpoint-31000"``
+          (must contain ``config.json`` + ``model.safetensors``)
+        - **Safetensors file**: ``".../best_checkpoints/model-step=024000-*.safetensors"``
+          (``config.json`` must exist in the same directory)
     device : str
         Device for inference (e.g., "cuda", "cuda:0", "cpu").
     torch_dtype : str or torch.dtype
@@ -232,10 +240,81 @@ class Chronos2Forecaster(BaseForecaster):
 
         self._model_path = model_path
         self._device = device
+
+        # Resolve .safetensors file paths to a HF-compatible directory
+        resolved_path, self._tmp_dir = self._resolve_model_path(model_path)
         self._pipeline = BaseChronosPipeline.from_pretrained(
-            model_path, device_map=device, torch_dtype=torch_dtype
+            resolved_path, device_map=device, torch_dtype=torch_dtype
         )
-        self._model_name = Path(model_path).name if Path(model_path).exists() else model_path
+
+        # Derive a readable model name
+        path = Path(model_path)
+        if path.suffix == ".safetensors":
+            self._model_name = path.stem
+        elif path.exists():
+            self._model_name = path.name
+        else:
+            self._model_name = model_path
+
+    def __del__(self):
+        """Clean up temporary directory created for .safetensors resolution."""
+        if hasattr(self, "_tmp_dir") and self._tmp_dir is not None:
+            import shutil
+
+            shutil.rmtree(self._tmp_dir, ignore_errors=True)
+
+    @staticmethod
+    def _resolve_model_path(model_path: str) -> tuple[str, Path | None]:
+        """Resolve model path, handling direct .safetensors file references.
+
+        HuggingFace ``from_pretrained()`` expects a directory containing
+        ``config.json`` and ``model.safetensors``. When the user passes a
+        direct ``.safetensors`` file (e.g., a metric-encoded best checkpoint),
+        this method creates a temporary directory with symlinks so that
+        ``from_pretrained()`` can load it transparently.
+
+        Parameters
+        ----------
+        model_path : str
+            Original model path from CLI.
+
+        Returns
+        -------
+        tuple[str, Path | None]
+            (resolved_directory_path, tmp_dir_path_or_None)
+        """
+        path = Path(model_path)
+
+        # HuggingFace Hub model ID or standard directory — pass through
+        if not path.exists() or path.is_dir():
+            return model_path, None
+
+        if path.suffix == ".safetensors":
+            config_path = path.parent / "config.json"
+            if not config_path.exists():
+                raise FileNotFoundError(
+                    f"config.json not found in {path.parent}. "
+                    f"HuggingFace from_pretrained() requires config.json "
+                    f"alongside the model weights."
+                )
+
+            import tempfile
+
+            tmp_dir = Path(tempfile.mkdtemp(prefix="tsm-eval-"))
+            (tmp_dir / "config.json").symlink_to(config_path.resolve())
+            (tmp_dir / "model.safetensors").symlink_to(path.resolve())
+
+            logger.info(
+                f"Resolved .safetensors file to temp directory:\n"
+                f"  config.json    -> {config_path}\n"
+                f"  model.safetensors -> {path.name}"
+            )
+            return str(tmp_dir), tmp_dir
+
+        raise ValueError(
+            f"Unsupported model path: {model_path}\n"
+            f"Expected a directory, HuggingFace model ID, or .safetensors file."
+        )
 
     @property
     def name(self) -> str:
@@ -267,7 +346,11 @@ class Chronos2Forecaster(BaseForecaster):
 
 
 class ChronosBoltForecaster(BaseForecaster):
-    """Forecaster wrapper for Chronos-Bolt models."""
+    """Forecaster wrapper for Chronos-Bolt models.
+
+    Supports the same model_path formats as Chronos2Forecaster:
+    directory, HuggingFace model ID, or direct .safetensors file path.
+    """
 
     def __init__(
         self,
@@ -282,10 +365,25 @@ class ChronosBoltForecaster(BaseForecaster):
 
         self._model_path = model_path
         self._device = device
+
+        resolved_path, self._tmp_dir = Chronos2Forecaster._resolve_model_path(model_path)
         self._pipeline = BaseChronosPipeline.from_pretrained(
-            model_path, device_map=device, torch_dtype=torch_dtype
+            resolved_path, device_map=device, torch_dtype=torch_dtype
         )
-        self._model_name = Path(model_path).name if Path(model_path).exists() else model_path
+
+        path = Path(model_path)
+        if path.suffix == ".safetensors":
+            self._model_name = path.stem
+        elif path.exists():
+            self._model_name = path.name
+        else:
+            self._model_name = model_path
+
+    def __del__(self):
+        if hasattr(self, "_tmp_dir") and self._tmp_dir is not None:
+            import shutil
+
+            shutil.rmtree(self._tmp_dir, ignore_errors=True)
 
     @property
     def name(self) -> str:
