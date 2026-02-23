@@ -1,0 +1,49 @@
+# Phase B: MantisV2 Adapter + Head Fine-tuning
+#
+# Train a learnable channel adapter (LinearChannelCombiner) and
+# classification head while keeping the backbone frozen.
+# Useful when number of sensor channels is large.
+#
+# Usage:
+#   cd examples/classification/apc_occupancy
+#   python training/train.py --config training/configs/finetune-adapter.yaml
+
+mode: finetune
+seed: 42
+output_dir: results/finetune-adapter
+
+# --- Model ---
+model:
+  pretrained_name: "paris-noah/MantisV2"
+  return_transf_layer: -1
+  output_token: "cls_token"
+  device: "cuda"
+
+# --- Data ---
+data:
+  sensor_csv: "/group-volume/workspace/haeri.kim/Time-Series/data/SmartThings/Samsung_QST_Data/user01_0131_0202/output/merged_processed_data.csv"
+  label_csv: "/group-volume/workspace/haeri.kim/Time-Series/data/SmartThings/Samsung_QST_Data/user01_0131_0202/output/occupancy_counts.csv"
+  test_sensor_csv: "/group-volume/workspace/haeri.kim/Time-Series/data/SmartThings/Samsung_QST_Data/user01_0125_0126/output/merged_processed_data.csv"
+  test_label_csv: "/group-volume/workspace/haeri.kim/Time-Series/data/SmartThings/Samsung_QST_Data/user01_0125_0126/output/occupancy_counts.csv"
+  nan_threshold: 0.5
+  binarize: true
+  exclude_channels: []
+
+# --- Dataset ---
+dataset:
+  seq_len: 64
+  stride: 1
+  target_seq_len: 512
+
+# --- Fine-tuning ---
+finetune:
+  fine_tuning_type: "adapter_head"
+  num_epochs: 300
+  batch_size: 128
+  learning_rate: 5.0e-4
+  learning_rate_adjusting: true
+  label_smoothing: 0.1
+  head_hidden_dim: 100
+  # Learnable channel adapter
+  adapter_type: "linear"       # LinearChannelCombiner (differentiable)
+  adapter_new_channels: 5      # Reduce to 5 channels

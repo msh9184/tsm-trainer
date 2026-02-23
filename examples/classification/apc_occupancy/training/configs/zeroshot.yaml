@@ -1,0 +1,49 @@
+# Phase A: Zero-shot MantisV2 Classification
+#
+# Extract embeddings from pretrained MantisV2 (no fine-tuning),
+# then train simple sklearn classifiers on the frozen features.
+#
+# Usage:
+#   cd examples/classification/apc_occupancy
+#   python training/train.py --config training/configs/zeroshot.yaml
+
+mode: zeroshot
+seed: 42
+output_dir: results/zeroshot
+
+# --- Model ---
+model:
+  pretrained_name: "paris-noah/MantisV2"
+  return_transf_layer: 2       # Layer 3 (0-indexed) recommended for zero-shot
+  output_token: "combined"     # cls + mean -> 512-dim per channel
+  device: "cuda"
+
+# --- Data ---
+# Paths should be absolute or relative to the working directory.
+# On GPU server: /group-volume/workspace/haeri.kim/Time-Series/data/SmartThings/Samsung_QST_Data/
+data:
+  sensor_csv: "/group-volume/workspace/haeri.kim/Time-Series/data/SmartThings/Samsung_QST_Data/user01_0131_0202/output/merged_processed_data.csv"
+  label_csv: "/group-volume/workspace/haeri.kim/Time-Series/data/SmartThings/Samsung_QST_Data/user01_0131_0202/output/occupancy_counts.csv"
+  test_sensor_csv: "/group-volume/workspace/haeri.kim/Time-Series/data/SmartThings/Samsung_QST_Data/user01_0125_0126/output/merged_processed_data.csv"
+  test_label_csv: "/group-volume/workspace/haeri.kim/Time-Series/data/SmartThings/Samsung_QST_Data/user01_0125_0126/output/occupancy_counts.csv"
+  nan_threshold: 0.5           # Drop channels with >50% NaN
+  binarize: true               # occupancy > 0 -> 1
+  exclude_channels: []         # Add channel names to exclude
+
+# --- Dataset ---
+dataset:
+  seq_len: 64                  # 64 * 5min = 5h20m window
+  stride: 1                    # Dense predictions (max overlap)
+  target_seq_len: 512          # Interpolate to MantisV2 pretrained length
+
+# --- Zero-shot classifiers ---
+zeroshot:
+  classifiers:
+    - nearest_centroid
+    - random_forest
+    - svm
+  random_forest_n_estimators: 200
+  random_forest_n_jobs: -1
+  svm_kernel: rbf
+  svm_C: 1.0
+  random_seed: 42
