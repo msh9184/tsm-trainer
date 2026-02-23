@@ -1,10 +1,11 @@
 """Standalone evaluation runner for occupancy detection models.
 
 Usage:
-    python evaluation/evaluate.py \\
-        --config training/configs/zeroshot.yaml \\
-        --predictions results/predictions.npz \\
-        --output results/eval_report.json
+    # From apc_occupancy directory:
+    python -m evaluation.evaluate --predictions results/predictions_svm.npz
+
+    # Or directly (adds parent to sys.path automatically):
+    python evaluation/evaluate.py --predictions results/predictions_svm.npz
 
 Or programmatically:
     from evaluation.evaluate import evaluate_predictions
@@ -21,7 +22,13 @@ from pathlib import Path
 
 import numpy as np
 
-from .metrics import ClassificationMetrics, compute_metrics
+# Support both package import and direct execution
+try:
+    from .metrics import ClassificationMetrics, compute_metrics
+except ImportError:
+    # Direct execution: add parent directory to path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from evaluation.metrics import ClassificationMetrics, compute_metrics
 
 logger = logging.getLogger(__name__)
 

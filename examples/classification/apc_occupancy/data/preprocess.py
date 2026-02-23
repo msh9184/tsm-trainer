@@ -37,8 +37,8 @@ class PreprocessConfig:
             E.g. 0.5 means channels with >50% NaN are excluded.
         channels: Explicit list of channel names to use. If None, all
             channels passing nan_threshold are used.
-        exclude_channels: Channels to always exclude (regex patterns or
-            exact names).
+        exclude_channels: Channels to always exclude (substring match on
+            channel names).
         binarize: If True, convert occupancy count to binary (>0 -> 1).
     """
     sensor_csv: str | Path = ""

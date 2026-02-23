@@ -252,6 +252,7 @@ def run_zeroshot(
     # Train and evaluate classifiers
     classifiers = _build_sklearn_classifiers(config.zeroshot)
     results = {}
+    predictions = {}
 
     for name, clf in classifiers.items():
         logger.info("-" * 40)
@@ -272,8 +273,12 @@ def run_zeroshot(
         logger.info("Classifier training + eval time: %.1fs", train_time)
 
         results[name] = metrics
+        pred_data = {"y_true": y_test, "y_pred": y_pred}
+        if y_prob is not None:
+            pred_data["y_prob"] = y_prob
+        predictions[name] = pred_data
 
-    return results
+    return results, predictions
 
 
 # ---------------------------------------------------------------------------
@@ -389,6 +394,12 @@ def run_finetune(
         n_channels = X_train.shape[1]
         effective_channels = n_channels
         adapter = None  # Already applied, don't pass to model.fit
+        if ft_cfg.fine_tuning_type == "adapter_head":
+            logger.warning(
+                "Non-differentiable adapter (%s) pre-applied; "
+                "fine_tuning_type='adapter_head' will behave as 'head' mode",
+                ft_cfg.adapter_type,
+            )
 
     head = _build_head(ft_cfg, effective_channels, config.model.hidden_dim)
 
@@ -425,7 +436,8 @@ def run_finetune(
     metrics = compute_metrics(y_test, y_pred, y_prob)
     logger.info("\n%s", metrics.summary())
 
-    return {"finetune": metrics}
+    predictions = {"finetune": {"y_true": y_test, "y_pred": y_pred, "y_prob": y_prob}}
+    return {"finetune": metrics}, predictions
 
 
 # ---------------------------------------------------------------------------
@@ -442,8 +454,11 @@ def _set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def _save_results(results: dict, output_dir: Path, config: TrainConfig) -> None:
-    """Save evaluation results and predictions."""
+def _save_results(
+    results: dict, output_dir: Path, config: TrainConfig,
+    predictions: dict | None = None,
+) -> None:
+    """Save evaluation results and optionally predictions."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     report = {
@@ -463,6 +478,13 @@ def _save_results(results: dict, output_dir: Path, config: TrainConfig) -> None:
     with open(report_path, "w") as f:
         json.dump(report, f, indent=2)
     logger.info("Saved report to %s", report_path)
+
+    # Save predictions for standalone evaluation
+    if predictions:
+        for name, pred_data in predictions.items():
+            pred_path = output_dir / f"predictions_{name}.npz"
+            np.savez(pred_path, **pred_data)
+            logger.info("Saved predictions to %s", pred_path)
 
 
 def main():
@@ -494,29 +516,35 @@ def main():
         config.model.device = args.device
     if args.seed is not None:
         config.seed = args.seed
+        config.zeroshot.random_seed = args.seed
 
     _set_seed(config.seed)
     logger.info("Configuration loaded from %s", args.config)
     logger.info("Mode: %s, Device: %s, Seed: %d", config.mode, config.model.device, config.seed)
 
-    # Load data
-    preprocess_cfg = PreprocessConfig(**config.data)
+    # Load data (filter to valid PreprocessConfig fields only)
+    _preprocess_fields = set(PreprocessConfig.__dataclass_fields__)
+    train_data_cfg = {k: v for k, v in config.data.items() if k in _preprocess_fields}
+    preprocess_cfg = PreprocessConfig(**train_data_cfg)
     train_data = load_and_preprocess(preprocess_cfg)
     train_sensor, train_labels, channel_names, train_timestamps = train_data
 
-    # Load test data (separate config entries)
-    test_data_cfg = config.data.copy()
+    # Load test data (separate config entries, filtered to valid fields)
+    test_data_cfg = {k: v for k, v in config.data.items() if k in _preprocess_fields}
     test_data_cfg["sensor_csv"] = config.data.get("test_sensor_csv", "")
     test_data_cfg["label_csv"] = config.data.get("test_label_csv", "")
-    # Remove test-specific keys before creating PreprocessConfig
-    for key in ("test_sensor_csv", "test_label_csv"):
-        test_data_cfg.pop(key, None)
     test_preprocess_cfg = PreprocessConfig(**test_data_cfg)
     test_data = load_and_preprocess(test_preprocess_cfg)
     test_sensor, test_labels, test_channel_names, test_timestamps = test_data
 
     # Use common channels between train and test
     common_channels = [c for c in channel_names if c in test_channel_names]
+    if not common_channels:
+        raise ValueError(
+            f"No common channels between train ({channel_names}) "
+            f"and test ({test_channel_names}). "
+            "Check that sensor data files have overlapping column names."
+        )
     if len(common_channels) < len(channel_names):
         logger.warning(
             "Train has %d channels, test has %d, using %d common channels",
@@ -542,14 +570,16 @@ def main():
     # Run appropriate phase
     output_dir = Path(config.output_dir)
     if config.mode == "zeroshot":
-        results = run_zeroshot(model, train_dataset, test_dataset, config)
+        results, predictions = run_zeroshot(model, train_dataset, test_dataset, config)
     elif config.mode == "finetune":
-        results = run_finetune(network, model, train_dataset, test_dataset, config)
+        results, predictions = run_finetune(
+            network, model, train_dataset, test_dataset, config,
+        )
     else:
         raise ValueError(f"Unknown mode: {config.mode}")
 
-    # Save results
-    _save_results(results, output_dir, config)
+    # Save results and predictions
+    _save_results(results, output_dir, config, predictions=predictions)
 
     # Print final summary
     logger.info("=" * 60)
