@@ -47,3 +47,13 @@ zeroshot:
   svm_kernel: rbf
   svm_C: 1.0
   random_seed: 42
+
+# --- Visualization ---
+visualization:
+  enabled: true
+  methods: ["tsne", "pca"]       # Dimensionality reduction methods
+  save_format: ["png", "pdf"]    # Output formats
+  dpi: 300
+  snapshot_interval: 0           # Not applicable for zero-shot
+  create_gif: false
+  gif_fps: 2

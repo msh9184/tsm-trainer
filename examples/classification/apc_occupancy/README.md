@@ -32,10 +32,16 @@ apc_occupancy/
 │       ├── finetune-head.yaml         # Phase B: head-only fine-tuning
 │       ├── finetune-adapter.yaml      # Phase B: adapter + head
 │       └── finetune-full.yaml         # Phase B: full fine-tuning
-└── evaluation/
+├── evaluation/
+│   ├── __init__.py
+│   ├── metrics.py                     # Accuracy, F1, Precision, Recall, EER, AUC
+│   └── evaluate.py                    # Standalone evaluation runner
+└── visualization/
     ├── __init__.py
-    ├── metrics.py                     # Accuracy, F1, Precision, Recall, EER
-    └── evaluate.py                    # Standalone evaluation runner
+    ├── style.py                       # Publication-quality plot styling
+    ├── embeddings.py                  # t-SNE, UMAP, PCA embedding plots
+    ├── curves.py                      # ROC, DET, confusion matrix plots
+    └── animation.py                   # Training progression GIF animation
 ```
 
 ## Setup
@@ -46,8 +52,14 @@ apc_occupancy/
 # MantisV2 (from source)
 pip install git+https://github.com/vfeofanov/mantis.git
 
-# Additional dependencies
-pip install scikit-learn pyyaml
+# Core dependencies
+pip install scikit-learn pyyaml matplotlib seaborn scipy
+
+# Optional: UMAP for embedding visualization (falls back to t-SNE if absent)
+pip install umap-learn
+
+# Optional: GIF animation for training progression
+pip install imageio
 ```
 
 ### 2. Data
@@ -131,6 +143,30 @@ python training/train.py --config training/configs/zeroshot.yaml --seed 123
 
 This requires **no gradient computation** and runs in seconds.
 
+#### How Zero-shot Classification Works
+
+The term "zero-shot" refers to the **backbone** being used without any gradient
+updates (pretrained weights only). The classification itself is **fully
+supervised** — sklearn classifiers learn from labeled training embeddings:
+
+```
+1. Z_train = MantisV2.transform(X_train)   # Frozen backbone → (N_train, 7680)
+2. Z_test  = MantisV2.transform(X_test)    # Frozen backbone → (N_test, 7680)
+3. clf.fit(Z_train, y_train)               # Learns decision boundary from labels
+4. y_pred  = clf.predict(Z_test)           # Classifies test embeddings
+```
+
+Each classifier learns to distinguish "occupied" from "empty" embeddings:
+- **NearestCentroid**: Computes the centroid (mean) of each class in embedding
+  space, assigns test points to the nearest class center.
+- **RandomForest**: Builds an ensemble of decision trees that split on embedding
+  features to separate classes.
+- **SVM**: Finds the optimal hyperplane that maximally separates the two classes
+  in embedding space (with RBF kernel for nonlinear boundaries).
+
+The label information (`y_train`: 0=empty, 1=occupied) is explicitly provided
+during `clf.fit()`. No unsupervised clustering or threshold tuning is involved.
+
 ### Phase B: Fine-tuning
 
 Three fine-tuning strategies in order of parameter count:
@@ -196,6 +232,27 @@ LayerNorm(in_dim) → Linear(in_dim, 100) → ReLU → Dropout(0.1) → Linear(1
 | `adapter_type` | str | null | Channel adapter: linear, pca, svd, var, null |
 | `adapter_new_channels` | int | 5 | Target channel count for adapter |
 
+### Visualization Section
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | true | Enable/disable all visualizations |
+| `methods` | list | ["tsne", "pca"] | Dimensionality reduction methods |
+| `save_format` | list | ["png", "pdf"] | Output formats for saved plots |
+| `dpi` | int | 300 | Resolution for raster outputs |
+| `snapshot_interval` | int | 0 | Embedding snapshots every N epochs (0=disabled) |
+| `create_gif` | bool | true | Create animated GIF from snapshots |
+| `gif_fps` | int | 2 | GIF frames per second |
+
+> **Note on `snapshot_interval`**: When set to a value > 0, the fine-tuning
+> loop calls `model.fit(num_epochs=1)` per epoch to capture intermediate
+> embeddings. This causes MantisTrainer to **recreate the optimizer each call**,
+> resetting momentum and LR schedule. For this reason, `snapshot_interval`
+> defaults to `0` in all fine-tuning configs. Enable it only when you need
+> training progression visualization and understand the trade-off (constant LR
+> is forced automatically in snapshot mode to reduce the impact). For production
+> training, always keep `snapshot_interval: 0`.
+
 ## Multivariate and Covariate Handling
 
 MantisV2 processes each sensor channel **independently** through a shared backbone
@@ -225,8 +282,11 @@ classification is planned for Phase C.
 | **Precision** | True positives / (true positives + false positives) |
 | **Recall** | True positives / (true positives + false negatives) |
 | **EER** | Equal Error Rate (where FPR = FNR). Requires probability output. |
+| **AUC** | Area Under the ROC Curve. Requires probability output. |
 
 ## Output
+
+### Evaluation Report
 
 Results are saved to `{output_dir}/eval_report.json`:
 
@@ -239,16 +299,51 @@ Results are saved to `{output_dir}/eval_report.json`:
     "output_token": "combined"
   },
   "results": {
-    "nearest_centroid": {
+    "svm": {
       "accuracy": 0.85,
       "f1": 0.72,
       "precision": 0.78,
       "recall": 0.67,
-      "eer": 0.18
+      "eer": 0.18,
+      "eer_threshold": 0.42,
+      "roc_auc": 0.92,
+      "confusion_matrix": [[150, 30], [20, 88]],
+      "n_samples": 288,
+      "class_distribution": {"0": 180, "1": 108}
     }
   }
 }
 ```
+
+### Predictions
+
+Saved to `{output_dir}/predictions_{classifier}.npz` containing `y_true`,
+`y_pred`, and (when available) `y_prob`. These can be used for standalone
+re-evaluation:
+
+```bash
+python evaluation/evaluate.py --predictions results/zeroshot/predictions_svm.npz
+```
+
+### Visualization Outputs
+
+When `visualization.enabled: true`, the following plots are generated in
+`{output_dir}/plots/`:
+
+| File | Description |
+|------|-------------|
+| `embeddings_train_test_tsne.{png,pdf}` | Train vs test embedding comparison (shared t-SNE space) |
+| `embeddings_methods.{png,pdf}` | Side-by-side PCA / t-SNE (/ UMAP) of test embeddings |
+| `roc_curve_{clf}.{png,pdf}` | ROC curve with AUC annotation (per classifier) |
+| `det_curve_{clf}.{png,pdf}` | DET curve with EER point on normal-deviate scale (per classifier) |
+| `confusion_matrix_{clf}.{png,pdf}` | Confusion matrix heatmap with counts and percentages (per classifier) |
+
+For fine-tuning with `snapshot_interval > 0`:
+
+| File | Description |
+|------|-------------|
+| `snapshots/epoch_NNNN.png` | PCA embedding snapshot at epoch N |
+| `training_progression.gif` | Animated GIF of embedding evolution |
 
 ## Troubleshooting
 
@@ -268,3 +363,7 @@ The preprocessing performs an inner join on timestamps.
 ### High NaN Fraction
 If too many channels are dropped, lower `nan_threshold` or explicitly
 list desired channels in `channels`.
+
+### Headless Server (No Display)
+The visualization module auto-detects headless environments and uses the
+`Agg` backend. No manual configuration is needed on GPU servers.

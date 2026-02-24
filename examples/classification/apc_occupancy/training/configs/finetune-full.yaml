@@ -44,3 +44,13 @@ finetune:
   learning_rate_adjusting: true
   label_smoothing: 0.1
   head_hidden_dim: 100
+
+# --- Visualization ---
+visualization:
+  enabled: true
+  methods: ["tsne", "pca"]
+  save_format: ["png", "pdf"]
+  dpi: 300
+  snapshot_interval: 0           # Set >0 to enable epoch-by-epoch snapshots (see README caveats)
+  create_gif: true
+  gif_fps: 2

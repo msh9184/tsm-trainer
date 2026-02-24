@@ -7,11 +7,13 @@ precision, recall, EER, and a confusion matrix as a structured dataclass.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 
 import numpy as np
 from sklearn.metrics import (
     accuracy_score,
+    auc as sklearn_auc,
     confusion_matrix,
     f1_score,
     precision_score,
@@ -36,6 +38,12 @@ class ClassificationMetrics:
     n_samples: int
     class_distribution: dict[int, int]  # {0: count, 1: count}
 
+    # Raw ROC curve data (not serialized to JSON — used for plotting)
+    roc_fpr: np.ndarray | None = None
+    roc_tpr: np.ndarray | None = None
+    roc_thresholds: np.ndarray | None = None
+    roc_auc: float = float("nan")
+
     def summary(self) -> str:
         """Return a formatted summary string."""
         tn, fp, fn, tp = self.confusion_matrix.ravel()
@@ -47,6 +55,7 @@ class ClassificationMetrics:
             f"  Precision:   {self.precision:.4f}",
             f"  Recall:      {self.recall:.4f}",
             f"  EER:         {self.eer:.4f} (threshold={self.eer_threshold:.4f})",
+            f"  AUC:         {self.roc_auc:.4f}",
             "",
             "Confusion Matrix:",
             f"              Pred=0  Pred=1",
@@ -60,24 +69,34 @@ class ClassificationMetrics:
         return "\n".join(lines)
 
     def to_dict(self) -> dict:
-        """Convert to a JSON-serializable dictionary."""
+        """Convert to a JSON-serializable dictionary.
+
+        Note: ``roc_fpr``, ``roc_tpr``, ``roc_thresholds`` are excluded
+        because they are large arrays intended only for plotting.
+        NaN values are converted to ``None`` for valid JSON (RFC 7159).
+        """
+
+        def _safe(v: float) -> float | None:
+            return None if math.isnan(v) else v
+
         return {
             "accuracy": float(self.accuracy),
             "f1": float(self.f1),
             "precision": float(self.precision),
             "recall": float(self.recall),
-            "eer": float(self.eer),
-            "eer_threshold": float(self.eer_threshold),
+            "eer": _safe(float(self.eer)),
+            "eer_threshold": _safe(float(self.eer_threshold)),
+            "roc_auc": _safe(float(self.roc_auc)),
             "confusion_matrix": self.confusion_matrix.tolist(),
             "n_samples": self.n_samples,
             "class_distribution": self.class_distribution,
         }
 
 
-def _compute_eer(
+def _compute_eer_and_roc(
     y_true: np.ndarray, y_prob: np.ndarray | None,
-) -> tuple[float, float]:
-    """Compute Equal Error Rate from binary labels and probabilities.
+) -> tuple[float, float, np.ndarray | None, np.ndarray | None, np.ndarray | None, float]:
+    """Compute Equal Error Rate and full ROC curve data.
 
     Parameters
     ----------
@@ -85,17 +104,26 @@ def _compute_eer(
         Binary ground truth labels.
     y_prob : np.ndarray or None
         Predicted probabilities for the positive class. If None, returns
-        (nan, nan) as EER requires probability scores.
+        NaN values and None arrays.
 
     Returns
     -------
     eer : float
         Equal Error Rate.
-    threshold : float
+    eer_threshold : float
         Threshold at EER.
+    fpr : np.ndarray or None
+        False positive rates from ROC curve.
+    tpr : np.ndarray or None
+        True positive rates from ROC curve.
+    thresholds : np.ndarray or None
+        Decision thresholds from ROC curve.
+    auc_score : float
+        Area Under the ROC Curve.
     """
+    nan = float("nan")
     if y_prob is None:
-        return float("nan"), float("nan")
+        return nan, nan, None, None, None, nan
 
     # Ensure we have both classes
     unique_labels = np.unique(y_true)
@@ -104,7 +132,7 @@ def _compute_eer(
             "Only one class present in y_true (%s), EER is undefined",
             unique_labels,
         )
-        return float("nan"), float("nan")
+        return nan, nan, None, None, None, nan
 
     fpr, tpr, thresholds = roc_curve(y_true, y_prob)
     fnr = 1.0 - tpr
@@ -112,9 +140,12 @@ def _compute_eer(
     # Find the point where FPR ≈ FNR
     idx = np.nanargmin(np.abs(fpr - fnr))
     eer = float((fpr[idx] + fnr[idx]) / 2.0)
-    threshold = float(thresholds[idx]) if idx < len(thresholds) else 0.5
+    eer_threshold = float(thresholds[idx]) if idx < len(thresholds) else 0.5
 
-    return eer, threshold
+    # AUC via sklearn (avoids np.trapz deprecation in NumPy 2.0+)
+    auc_score = float(sklearn_auc(fpr, tpr))
+
+    return eer, eer_threshold, fpr, tpr, thresholds, auc_score
 
 
 def compute_metrics(
@@ -149,7 +180,9 @@ def compute_metrics(
     rec = recall_score(y_true, y_pred, zero_division=0)
     cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
 
-    eer, eer_thresh = _compute_eer(y_true, y_prob)
+    eer, eer_thresh, roc_fpr, roc_tpr, roc_thresholds, roc_auc = (
+        _compute_eer_and_roc(y_true, y_prob)
+    )
 
     unique, counts = np.unique(y_true, return_counts=True)
     class_dist = dict(zip(unique.tolist(), counts.tolist()))
@@ -164,4 +197,8 @@ def compute_metrics(
         confusion_matrix=cm,
         n_samples=len(y_true),
         class_distribution=class_dist,
+        roc_fpr=roc_fpr,
+        roc_tpr=roc_tpr,
+        roc_thresholds=roc_thresholds,
+        roc_auc=roc_auc,
     )

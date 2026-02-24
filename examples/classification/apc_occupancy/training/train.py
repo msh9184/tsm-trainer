@@ -91,6 +91,18 @@ class FineTuneConfig:
 
 
 @dataclass
+class VisualizationConfig:
+    """Visualization settings."""
+    enabled: bool = True
+    methods: list[str] = field(default_factory=lambda: ["tsne", "pca"])
+    save_format: list[str] = field(default_factory=lambda: ["png", "pdf"])
+    dpi: int = 300
+    snapshot_interval: int = 10  # Embedding snapshots every N epochs (0=disabled)
+    create_gif: bool = True
+    gif_fps: int = 2
+
+
+@dataclass
 class TrainConfig:
     """Top-level training configuration."""
     mode: str = "zeroshot"  # 'zeroshot' or 'finetune'
@@ -99,6 +111,7 @@ class TrainConfig:
     dataset: dict = field(default_factory=dict)  # DatasetConfig fields
     zeroshot: ZeroShotConfig = field(default_factory=ZeroShotConfig)
     finetune: FineTuneConfig = field(default_factory=FineTuneConfig)
+    visualization: VisualizationConfig = field(default_factory=VisualizationConfig)
     output_dir: str = "results"
     seed: int = 42
 
@@ -133,6 +146,12 @@ def load_config(config_path: str | Path) -> TrainConfig:
     ft_cfg = raw.get("finetune", {})
     config.finetune = FineTuneConfig(**{
         k: v for k, v in ft_cfg.items() if k in FineTuneConfig.__dataclass_fields__
+    })
+
+    # Visualization config
+    viz_cfg = raw.get("visualization", {})
+    config.visualization = VisualizationConfig(**{
+        k: v for k, v in viz_cfg.items() if k in VisualizationConfig.__dataclass_fields__
     })
 
     return config
@@ -181,6 +200,69 @@ def load_mantis_model(cfg: ModelConfig):
 
 
 # ---------------------------------------------------------------------------
+# Visualization helpers
+# ---------------------------------------------------------------------------
+
+def _plot_zeroshot_embeddings(
+    Z_train: np.ndarray, y_train: np.ndarray,
+    Z_test: np.ndarray, y_test: np.ndarray,
+    config: TrainConfig, output_dir: Path,
+) -> None:
+    """Plot embedding visualizations for zero-shot mode."""
+    import matplotlib.pyplot as plt
+
+    from visualization.embeddings import plot_embeddings_multi_method, plot_train_test_comparison
+
+    viz_dir = output_dir / "plots"
+    viz_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info("Generating embedding visualizations...")
+
+    try:
+        plot_train_test_comparison(
+            Z_train, y_train, Z_test, y_test,
+            method="tsne", output_path=viz_dir / "embeddings_train_test_tsne",
+        )
+        plt.close("all")
+        logger.info("  Saved train/test embedding comparison")
+    except Exception:
+        logger.warning("Failed to plot train/test comparison", exc_info=True)
+
+    try:
+        methods = config.visualization.methods
+        plot_embeddings_multi_method(
+            Z_test, y_test, methods=methods,
+            output_path=viz_dir / "embeddings_methods",
+        )
+        plt.close("all")
+        logger.info("  Saved multi-method embedding comparison")
+    except Exception:
+        logger.warning("Failed to plot multi-method comparison", exc_info=True)
+
+
+def _plot_evaluation_curves(
+    y_true: np.ndarray, y_pred: np.ndarray, y_prob: np.ndarray | None,
+    metrics, model_name: str, output_dir: Path,
+) -> None:
+    """Plot ROC, DET, and confusion matrix for a single classifier."""
+    import matplotlib.pyplot as plt
+
+    from visualization.curves import plot_all_curves
+
+    viz_dir = output_dir / "plots"
+    viz_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        plot_all_curves(
+            y_true, y_pred, y_prob, metrics,
+            output_dir=viz_dir, model_name=model_name,
+        )
+        plt.close("all")
+    except Exception:
+        logger.warning("Failed to plot curves for %s", model_name, exc_info=True)
+
+
+# ---------------------------------------------------------------------------
 # Phase A: Zero-shot
 # ---------------------------------------------------------------------------
 
@@ -218,7 +300,7 @@ def run_zeroshot(
     train_dataset: OccupancyDataset,
     test_dataset: OccupancyDataset,
     config: TrainConfig,
-) -> dict:
+) -> tuple[dict, dict]:
     """Run zero-shot classification with MantisV2 embeddings.
 
     1. Extract embeddings from train/test windows
@@ -249,6 +331,12 @@ def run_zeroshot(
         Z_train.shape, Z_test.shape, embed_time,
     )
 
+    output_dir = Path(config.output_dir)
+
+    # Embedding visualization (before classifier training)
+    if config.visualization.enabled:
+        _plot_zeroshot_embeddings(Z_train, y_train, Z_test, y_test, config, output_dir)
+
     # Train and evaluate classifiers
     classifiers = _build_sklearn_classifiers(config.zeroshot)
     results = {}
@@ -277,6 +365,10 @@ def run_zeroshot(
         if y_prob is not None:
             pred_data["y_prob"] = y_prob
         predictions[name] = pred_data
+
+        # Per-classifier evaluation curves
+        if config.visualization.enabled:
+            _plot_evaluation_curves(y_test, y_pred, y_prob, metrics, name, output_dir)
 
     return results, predictions
 
@@ -358,7 +450,7 @@ def run_finetune(
     train_dataset: OccupancyDataset,
     test_dataset: OccupancyDataset,
     config: TrainConfig,
-) -> dict:
+) -> tuple[dict, dict]:
     """Run fine-tuning with MantisTrainer.
 
     Returns dict with 'finetune' key -> ClassificationMetrics.
@@ -413,18 +505,90 @@ def run_finetune(
         ft_cfg.label_smoothing,
     )
 
-    t0 = time.time()
-    model.fit(
-        X_train, y_train,
-        fine_tuning_type=ft_cfg.fine_tuning_type,
-        adapter=adapter,
-        head=head,
-        num_epochs=ft_cfg.num_epochs,
-        batch_size=ft_cfg.batch_size,
-        base_learning_rate=ft_cfg.learning_rate,
-        criterion=criterion,
-        learning_rate_adjusting=ft_cfg.learning_rate_adjusting,
+    output_dir = Path(config.output_dir)
+    viz_cfg = config.visualization
+    use_snapshots = (
+        viz_cfg.enabled
+        and viz_cfg.snapshot_interval > 0
+        and ft_cfg.num_epochs > 1
     )
+
+    # Capture pre-training embeddings for before/after comparison
+    Z_pre_test = None
+    if viz_cfg.enabled and not use_snapshots:
+        try:
+            Z_pre_test = model.transform(X_test)
+            logger.info("Captured pre-training embeddings for before/after comparison")
+        except Exception:
+            logger.warning("Failed to capture pre-training embeddings", exc_info=True)
+
+    t0 = time.time()
+
+    if use_snapshots:
+        # Epoch-by-epoch training with embedding snapshots.
+        # WARNING: MantisTrainer.fit() creates a new optimizer on each call,
+        # so the optimizer state (momentum, LR schedule) resets every epoch.
+        # This mode is for visualization research only — training dynamics
+        # will differ from the standard single-call path.
+        from visualization.animation import EmbeddingTracker
+
+        logger.warning(
+            "Snapshot mode: calling model.fit(num_epochs=1) per epoch. "
+            "Optimizer and LR schedule reset each call — training dynamics "
+            "will differ from standard mode. Use snapshot_interval=0 for "
+            "production training."
+        )
+
+        tracker = EmbeddingTracker(
+            output_dir=output_dir / "snapshots",
+            method="pca",
+            random_state=config.seed,
+        )
+        n_snap = min(500, len(X_test))
+        X_snap, y_snap = X_test[:n_snap], y_test[:n_snap]
+
+        # Disable LR schedule adjusting to reduce per-epoch reset impact
+        fit_kwargs = dict(
+            fine_tuning_type=ft_cfg.fine_tuning_type,
+            adapter=adapter,
+            head=head,
+            num_epochs=1,
+            batch_size=ft_cfg.batch_size,
+            base_learning_rate=ft_cfg.learning_rate,
+            criterion=criterion,
+            learning_rate_adjusting=False,  # Constant LR — avoids schedule reset
+        )
+
+        for epoch in range(ft_cfg.num_epochs):
+            model.fit(X_train, y_train, **fit_kwargs)
+            if epoch % viz_cfg.snapshot_interval == 0 or epoch == ft_cfg.num_epochs - 1:
+                try:
+                    Z_snap = model.transform(X_snap)
+                    tracker.save_snapshot(Z_snap, y_snap, epoch=epoch)
+                except Exception:
+                    logger.warning("Snapshot failed at epoch %d", epoch, exc_info=True)
+
+        if viz_cfg.create_gif and tracker.n_snapshots > 1:
+            gif_path = tracker.create_gif(
+                output_path=output_dir / "training_progression.gif",
+                fps=viz_cfg.gif_fps,
+            )
+            if gif_path:
+                logger.info("Training progression GIF: %s", gif_path)
+    else:
+        # Standard: train all epochs at once (correct optimizer dynamics)
+        model.fit(
+            X_train, y_train,
+            fine_tuning_type=ft_cfg.fine_tuning_type,
+            adapter=adapter,
+            head=head,
+            num_epochs=ft_cfg.num_epochs,
+            batch_size=ft_cfg.batch_size,
+            base_learning_rate=ft_cfg.learning_rate,
+            criterion=criterion,
+            learning_rate_adjusting=ft_cfg.learning_rate_adjusting,
+        )
+
     train_time = time.time() - t0
     logger.info("Training completed in %.1fs", train_time)
 
@@ -435,6 +599,28 @@ def run_finetune(
 
     metrics = compute_metrics(y_test, y_pred, y_prob)
     logger.info("\n%s", metrics.summary())
+
+    # Final visualizations
+    if viz_cfg.enabled:
+        try:
+            import matplotlib.pyplot as plt
+
+            from visualization.embeddings import plot_train_test_comparison
+
+            viz_dir = output_dir / "plots"
+            Z_train_final = model.transform(X_train)
+            Z_test_final = model.transform(X_test)
+            plot_train_test_comparison(
+                Z_train_final, y_train, Z_test_final, y_test,
+                method="tsne",
+                output_path=viz_dir / "embeddings_train_test_tsne",
+            )
+            plt.close("all")
+            logger.info("Saved final embedding visualization")
+        except Exception:
+            logger.warning("Failed to plot final embeddings", exc_info=True)
+
+        _plot_evaluation_curves(y_test, y_pred, y_prob, metrics, "finetune", output_dir)
 
     predictions = {"finetune": {"y_true": y_test, "y_pred": y_pred, "y_prob": y_prob}}
     return {"finetune": metrics}, predictions
@@ -521,6 +707,14 @@ def main():
     _set_seed(config.seed)
     logger.info("Configuration loaded from %s", args.config)
     logger.info("Mode: %s, Device: %s, Seed: %d", config.mode, config.model.device, config.seed)
+
+    # Apply visualization output configuration (formats, DPI) before any plotting
+    if config.visualization.enabled:
+        from visualization.style import configure_output
+        configure_output(
+            formats=config.visualization.save_format,
+            dpi=config.visualization.dpi,
+        )
 
     # Load data (filter to valid PreprocessConfig fields only)
     _preprocess_fields = set(PreprocessConfig.__dataclass_fields__)
