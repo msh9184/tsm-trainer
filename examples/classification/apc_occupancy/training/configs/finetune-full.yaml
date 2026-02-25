@@ -9,6 +9,7 @@
 #   python training/train.py --config training/configs/finetune-full.yaml
 
 mode: finetune
+data_mode: legacy
 seed: 42
 output_dir: results/finetune-full
 

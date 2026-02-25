@@ -1,0 +1,73 @@
+# P4 Zero-shot MantisV2 Classification
+#
+# Primary experiment: 24h window (seq_len=288) with 4-channel baseline.
+# Uses P4 data pipeline: single sensor CSV + split train/test label CSVs.
+# Context windows can reference sensor data outside the labeled time range.
+#
+# Usage:
+#   cd examples/classification/apc_occupancy
+#   python training/train.py --config training/configs/p4-zeroshot.yaml
+#
+# CLI overrides for ablation:
+#   --seq-len 64        # Short window (5h20m)
+#   --seq-len 128       # Medium window (10h40m)
+#   --seq-len 512       # Native MantisV2 length (42h40m, no interpolation)
+#   --channels d620900d_motionSensor f2e891c6_powerMeter   # 2-channel baseline
+#   --add-time-features  # Add hour_sin/hour_cos channels
+
+mode: zeroshot
+data_mode: p4
+seed: 42
+output_dir: results/p4-zeroshot
+
+# --- Model ---
+model:
+  pretrained_name: "paris-noah/MantisV2"
+  return_transf_layer: 2       # Layer 3 (0-indexed) recommended for zero-shot
+  output_token: "combined"     # cls + mean -> 512-dim per channel
+  device: "cuda"
+
+# --- Data (P4 pipeline) ---
+# Single sensor CSV covers 02/09~02/23, labels are event-based (02/10~02/19).
+data:
+  sensor_csv: "/group-volume/workspace/haeri.kim/Time-Series/data/SmartThings/Samsung_QST_Data/enter_leave/merged_data_with_motion_count_0209_0223.csv"
+  label_csv: "/group-volume/workspace/haeri.kim/Time-Series/data/SmartThings/Samsung_QST_Data/enter_leave/occupancy_events_0210_0219_processed_train.csv"
+  test_label_csv: "/group-volume/workspace/haeri.kim/Time-Series/data/SmartThings/Samsung_QST_Data/enter_leave/occupancy_events_0210_0219_processed_test.csv"
+  label_format: "events"
+  initial_occupancy: 0
+  binarize: true
+  nan_threshold: 0.5
+  add_time_features: false     # Not needed for seq_len=288 (24h captures daily cycle)
+  channels:                    # 4-channel primary configuration (M+P+T1+T2)
+    - d620900d_motionSensor
+    - f2e891c6_powerMeter
+    - d620900d_temperatureMeasurement
+    - ccea734e_temperatureMeasurement
+
+# --- Dataset ---
+dataset:
+  seq_len: 288                 # 288 * 5min = 24h (full daily cycle)
+  stride: 1                    # Dense predictions (max overlap)
+  target_seq_len: 512          # Interpolate to MantisV2 pretrained length (1.78x)
+
+# --- Zero-shot classifiers ---
+zeroshot:
+  classifiers:
+    - nearest_centroid
+    - random_forest
+    - svm
+  random_forest_n_estimators: 200
+  random_forest_n_jobs: -1
+  svm_kernel: rbf
+  svm_C: 1.0
+  random_seed: 42
+
+# --- Visualization ---
+visualization:
+  enabled: true
+  methods: ["tsne", "pca"]
+  save_format: ["png"]
+  dpi: 300
+  snapshot_interval: 0
+  create_gif: false
+  gif_fps: 2

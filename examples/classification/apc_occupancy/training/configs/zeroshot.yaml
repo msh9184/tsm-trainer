@@ -8,6 +8,7 @@
 #   python training/train.py --config training/configs/zeroshot.yaml
 
 mode: zeroshot
+data_mode: legacy
 seed: 42
 output_dir: results/zeroshot
 

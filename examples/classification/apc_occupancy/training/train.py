@@ -6,15 +6,20 @@ Supports two modes:
   Phase B — Fine-tuning: Fine-tune MantisV2 classification head, adapter,
             or the entire model using MantisTrainer.
 
+Data loading modes:
+  - "p4": Single sensor CSV + separate train/test label CSVs (event-based).
+          Context windows can reference sensor data outside the labeled range.
+  - "legacy": Separate train/test sensor+label CSV pairs (per-timestep counts).
+
 Usage:
-    # Zero-shot evaluation
-    python training/train.py --config training/configs/zeroshot.yaml
+    # Zero-shot evaluation (P4 pipeline)
+    python training/train.py --config training/configs/p4-zeroshot.yaml
 
     # Fine-tuning (head only)
-    python training/train.py --config training/configs/finetune-head.yaml
+    python training/train.py --config training/configs/p4-finetune-head.yaml
 
-    # Fine-tuning (full)
-    python training/train.py --config training/configs/finetune-full.yaml
+    # Legacy mode (backward compatible)
+    python training/train.py --config training/configs/zeroshot.yaml
 """
 
 from __future__ import annotations
@@ -37,8 +42,8 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 _PROJECT_DIR = _SCRIPT_DIR.parent
 sys.path.insert(0, str(_PROJECT_DIR))
 
-from data.preprocess import PreprocessConfig, load_and_preprocess
-from data.dataset import DatasetConfig, OccupancyDataset, create_datasets
+from data.preprocess import PreprocessConfig, load_and_preprocess, load_sensor_and_labels
+from data.dataset import DatasetConfig, OccupancyDataset, create_datasets, create_datasets_from_splits
 from evaluation.metrics import compute_metrics
 
 logger = logging.getLogger(__name__)
@@ -106,6 +111,7 @@ class VisualizationConfig:
 class TrainConfig:
     """Top-level training configuration."""
     mode: str = "zeroshot"  # 'zeroshot' or 'finetune'
+    data_mode: str = "p4"  # 'p4' (new) or 'legacy'
     model: ModelConfig = field(default_factory=ModelConfig)
     data: dict = field(default_factory=dict)  # PreprocessConfig fields
     dataset: dict = field(default_factory=dict)  # DatasetConfig fields
@@ -123,6 +129,7 @@ def load_config(config_path: str | Path) -> TrainConfig:
 
     config = TrainConfig()
     config.mode = raw.get("mode", "zeroshot")
+    config.data_mode = raw.get("data_mode", "p4")
     config.output_dir = raw.get("output_dir", "results")
     config.seed = raw.get("seed", 42)
 
@@ -197,6 +204,112 @@ def load_mantis_model(cfg: ModelConfig):
     logger.info("Model loaded: %d parameters (%.2fM)", n_params, n_params / 1e6)
 
     return network, model
+
+
+# ---------------------------------------------------------------------------
+# Data loading
+# ---------------------------------------------------------------------------
+
+def _load_data_p4(
+    config: TrainConfig,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str]]:
+    """Load data using P4 pipeline: single sensor CSV + split label CSVs.
+
+    Returns
+    -------
+    sensor_array : np.ndarray, shape (n_timesteps, n_channels)
+    train_labels : np.ndarray, shape (n_timesteps,)  (-1 for non-train)
+    test_labels : np.ndarray, shape (n_timesteps,)   (-1 for non-test)
+    channel_names : list[str]
+    """
+    _preprocess_fields = set(PreprocessConfig.__dataclass_fields__)
+
+    # Common preprocess settings
+    base_cfg = {k: v for k, v in config.data.items() if k in _preprocess_fields}
+
+    # Load sensor + train labels
+    train_cfg = PreprocessConfig(**base_cfg)
+    train_result = load_sensor_and_labels(train_cfg)
+    sensor_array, train_labels, channel_names, sensor_ts, _ = train_result
+
+    # Load sensor + test labels (same sensor, different label file)
+    test_cfg_dict = dict(base_cfg)
+    test_cfg_dict["label_csv"] = config.data.get("test_label_csv", "")
+    test_cfg = PreprocessConfig(**test_cfg_dict)
+    test_result = load_sensor_and_labels(test_cfg)
+    _, test_labels, _, _, _ = test_result
+
+    # Validate alignment
+    if len(train_labels) != len(test_labels):
+        raise ValueError(
+            f"Train labels ({len(train_labels)}) and test labels ({len(test_labels)}) "
+            f"must have the same length (aligned to sensor timestamps)"
+        )
+
+    # Verify no overlap between train and test labeled regions
+    train_mask = train_labels >= 0
+    test_mask = test_labels >= 0
+    overlap = (train_mask & test_mask).sum()
+    if overlap > 0:
+        logger.warning(
+            "Train/test label overlap detected: %d timesteps. "
+            "This may cause label leakage.", overlap,
+        )
+
+    n_train = train_mask.sum()
+    n_test = test_mask.sum()
+    logger.info(
+        "P4 data loaded: %d sensor timesteps, %d channels, "
+        "train labels=%d, test labels=%d",
+        len(sensor_array), len(channel_names), n_train, n_test,
+    )
+
+    return sensor_array, train_labels, test_labels, channel_names
+
+
+def _load_data_legacy(
+    config: TrainConfig,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, list[str]]:
+    """Load data using legacy pipeline: separate train/test CSV pairs.
+
+    Returns
+    -------
+    train_sensor, train_labels, test_sensor, test_labels, channel_names
+    """
+    _preprocess_fields = set(PreprocessConfig.__dataclass_fields__)
+
+    # Train data
+    train_data_cfg = {k: v for k, v in config.data.items() if k in _preprocess_fields}
+    preprocess_cfg = PreprocessConfig(**train_data_cfg)
+    train_sensor, train_labels, channel_names, _ = load_and_preprocess(preprocess_cfg)
+
+    # Test data
+    test_data_cfg = dict(train_data_cfg)
+    test_data_cfg["sensor_csv"] = config.data.get("test_sensor_csv", "")
+    test_data_cfg["label_csv"] = config.data.get("test_label_csv", "")
+    test_preprocess_cfg = PreprocessConfig(**test_data_cfg)
+    test_sensor, test_labels, test_channel_names, _ = load_and_preprocess(test_preprocess_cfg)
+
+    # Use common channels between train and test
+    common_channels = [c for c in channel_names if c in test_channel_names]
+    if not common_channels:
+        raise ValueError(
+            f"No common channels between train ({channel_names}) "
+            f"and test ({test_channel_names}). "
+            "Check that sensor data files have overlapping column names."
+        )
+    if len(common_channels) < len(channel_names):
+        logger.warning(
+            "Train has %d channels, test has %d, using %d common channels",
+            len(channel_names), len(test_channel_names), len(common_channels),
+        )
+        train_idx = [channel_names.index(c) for c in common_channels]
+        test_idx = [test_channel_names.index(c) for c in common_channels]
+        train_sensor = train_sensor[:, train_idx]
+        test_sensor = test_sensor[:, test_idx]
+        channel_names = common_channels
+
+    return train_sensor, train_labels, test_sensor, test_labels, channel_names
 
 
 # ---------------------------------------------------------------------------
@@ -649,11 +762,13 @@ def _save_results(
 
     report = {
         "mode": config.mode,
+        "data_mode": config.data_mode,
         "model": {
             "pretrained": config.model.pretrained_name,
             "return_transf_layer": config.model.return_transf_layer,
             "output_token": config.model.output_token,
         },
+        "dataset": config.dataset,
         "results": {},
     }
 
@@ -689,6 +804,22 @@ def main():
         "--seed", type=int, default=None,
         help="Override random seed",
     )
+    parser.add_argument(
+        "--channels", type=str, nargs="+", default=None,
+        help="Override sensor channels (space-separated column names)",
+    )
+    parser.add_argument(
+        "--seq-len", type=int, default=None,
+        help="Override seq_len (must be multiple of 32)",
+    )
+    parser.add_argument(
+        "--add-time-features", action="store_true", default=None,
+        help="Override: add hour_sin/hour_cos time features",
+    )
+    parser.add_argument(
+        "--no-viz", action="store_true",
+        help="Disable visualization",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -698,15 +829,28 @@ def main():
     )
 
     config = load_config(args.config)
+
+    # Apply CLI overrides
     if args.device:
         config.model.device = args.device
     if args.seed is not None:
         config.seed = args.seed
         config.zeroshot.random_seed = args.seed
+    if args.channels is not None:
+        config.data["channels"] = args.channels
+    if args.seq_len is not None:
+        config.dataset["seq_len"] = args.seq_len
+    if args.add_time_features is not None:
+        config.data["add_time_features"] = args.add_time_features
+    if args.no_viz:
+        config.visualization.enabled = False
 
     _set_seed(config.seed)
     logger.info("Configuration loaded from %s", args.config)
-    logger.info("Mode: %s, Device: %s, Seed: %d", config.mode, config.model.device, config.seed)
+    logger.info(
+        "Mode: %s, Data: %s, Device: %s, Seed: %d",
+        config.mode, config.data_mode, config.model.device, config.seed,
+    )
 
     # Apply visualization output configuration (formats, DPI) before any plotting
     if config.visualization.enabled:
@@ -716,47 +860,29 @@ def main():
             dpi=config.visualization.dpi,
         )
 
-    # Load data (filter to valid PreprocessConfig fields only)
-    _preprocess_fields = set(PreprocessConfig.__dataclass_fields__)
-    train_data_cfg = {k: v for k, v in config.data.items() if k in _preprocess_fields}
-    preprocess_cfg = PreprocessConfig(**train_data_cfg)
-    train_data = load_and_preprocess(preprocess_cfg)
-    train_sensor, train_labels, channel_names, train_timestamps = train_data
-
-    # Load test data (separate config entries, filtered to valid fields)
-    test_data_cfg = {k: v for k, v in config.data.items() if k in _preprocess_fields}
-    test_data_cfg["sensor_csv"] = config.data.get("test_sensor_csv", "")
-    test_data_cfg["label_csv"] = config.data.get("test_label_csv", "")
-    test_preprocess_cfg = PreprocessConfig(**test_data_cfg)
-    test_data = load_and_preprocess(test_preprocess_cfg)
-    test_sensor, test_labels, test_channel_names, test_timestamps = test_data
-
-    # Use common channels between train and test
-    common_channels = [c for c in channel_names if c in test_channel_names]
-    if not common_channels:
-        raise ValueError(
-            f"No common channels between train ({channel_names}) "
-            f"and test ({test_channel_names}). "
-            "Check that sensor data files have overlapping column names."
-        )
-    if len(common_channels) < len(channel_names):
-        logger.warning(
-            "Train has %d channels, test has %d, using %d common channels",
-            len(channel_names), len(test_channel_names), len(common_channels),
-        )
-        train_idx = [channel_names.index(c) for c in common_channels]
-        test_idx = [test_channel_names.index(c) for c in common_channels]
-        train_sensor = train_sensor[:, train_idx]
-        test_sensor = test_sensor[:, test_idx]
-        channel_names = common_channels
-
-    logger.info("Using %d channels: %s", len(channel_names), channel_names)
-
-    # Create datasets
+    # Load data
     dataset_cfg = DatasetConfig(**config.dataset)
-    train_dataset, test_dataset = create_datasets(
-        train_sensor, train_labels, test_sensor, test_labels, dataset_cfg,
-    )
+
+    if config.data_mode == "p4":
+        # P4 pipeline: single sensor CSV + split train/test label CSVs
+        sensor_array, train_labels, test_labels, channel_names = _load_data_p4(config)
+        logger.info("Using %d channels: %s", len(channel_names), channel_names)
+        logger.info("Dataset config: seq_len=%d, stride=%d, target_seq_len=%s",
+                     dataset_cfg.seq_len, dataset_cfg.stride, dataset_cfg.target_seq_len)
+
+        train_dataset, test_dataset = create_datasets_from_splits(
+            sensor_array, train_labels, test_labels, dataset_cfg,
+        )
+    else:
+        # Legacy pipeline: separate train/test CSV pairs
+        train_sensor, train_labels, test_sensor, test_labels, channel_names = (
+            _load_data_legacy(config)
+        )
+        logger.info("Using %d channels: %s", len(channel_names), channel_names)
+
+        train_dataset, test_dataset = create_datasets(
+            train_sensor, train_labels, test_sensor, test_labels, dataset_cfg,
+        )
 
     # Load model
     network, model = load_mantis_model(config.model)

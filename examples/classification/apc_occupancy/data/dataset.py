@@ -6,6 +6,12 @@ samples shaped (n_channels, seq_len) suitable for MantisV2 input.
 The label for each window is the label at the *last* time step of the window,
 representing the occupancy state at the time of classification.
 
+Supports two construction modes:
+  - Legacy: sensor and label arrays are same length (inner-joined).
+  - P4 pipeline: full sensor array + label array with -1 for unlabeled
+    timesteps. Context windows can reference sensor data outside the
+    labeled time range while only using labeled timesteps as targets.
+
 MantisV2 constraints:
   - seq_len must be a multiple of 32 (num_patches)
   - The model's Conv1d expects in_channels=1 and processes each channel
@@ -31,14 +37,14 @@ class DatasetConfig:
 
     Attributes:
         seq_len: Window length in time steps. Must be a multiple of 32.
-            Default 64 = 5h20m at 5-min bins.
+            Default 288 = 24h at 5-min bins.
         stride: Stride between consecutive windows. Default 1 (maximum
             overlap for dense predictions).
         target_seq_len: If set, interpolate each window to this length
             for MantisV2. Must be multiple of 32. Useful when seq_len
             differs from MantisV2's pretrained length (512).
     """
-    seq_len: int = 64
+    seq_len: int = 288
     stride: int = 1
     target_seq_len: int | None = None
 
@@ -59,12 +65,16 @@ class OccupancyDataset(Dataset):
     Each sample is a (n_channels, seq_len) window of sensor readings
     with a binary label (0=empty, 1=occupied) at the window's end.
 
+    Supports cross-boundary context: sensor_array may be longer than the
+    labeled region. Only timesteps with label >= 0 are used as window
+    targets, but the sensor context window can extend into unlabeled regions.
+
     Parameters
     ----------
     sensor_array : np.ndarray
         Shape (n_timesteps, n_channels). Float32 sensor readings.
     label_array : np.ndarray
-        Shape (n_timesteps,). Int64 binary labels.
+        Shape (n_timesteps,). Int64 labels. -1 = unlabeled (skipped).
     config : DatasetConfig
         Window construction parameters.
     """
@@ -81,33 +91,57 @@ class OccupancyDataset(Dataset):
         self.config = config
         n_timesteps, n_channels = sensor_array.shape
 
+        if n_timesteps != len(label_array):
+            raise ValueError(
+                f"sensor_array ({n_timesteps}) and label_array ({len(label_array)}) "
+                f"must have the same length"
+            )
+
         if n_timesteps < config.seq_len:
             raise ValueError(
                 f"Not enough timesteps ({n_timesteps}) for window size "
                 f"({config.seq_len})"
             )
 
-        # Build window indices
-        starts = list(range(0, n_timesteps - config.seq_len + 1, config.stride))
-        self.n_windows = len(starts)
+        # Find valid target indices: timesteps with label >= 0 AND
+        # enough preceding sensor data for a full context window.
+        labeled_mask = label_array >= 0
+        labeled_indices = np.where(labeled_mask)[0]
+
+        # Filter: only indices where window [idx - seq_len + 1, idx] fits
+        min_idx = config.seq_len - 1
+        valid_indices = labeled_indices[labeled_indices >= min_idx]
+
+        # Apply stride: take every stride-th from the valid targets
+        if config.stride > 1:
+            valid_indices = valid_indices[::config.stride]
+
+        self.n_windows = len(valid_indices)
         self.n_channels = n_channels
+
+        if self.n_windows == 0:
+            raise ValueError(
+                f"No valid windows: {labeled_mask.sum()} labeled timesteps, "
+                f"seq_len={config.seq_len}, min valid index={min_idx}"
+            )
 
         # Pre-extract all windows: (n_windows, n_channels, seq_len)
         windows = np.stack([
-            sensor_array[s : s + config.seq_len].T  # (n_channels, seq_len)
-            for s in starts
+            sensor_array[i - config.seq_len + 1 : i + 1].T  # (n_channels, seq_len)
+            for i in valid_indices
         ])
-        # Labels: value at the last timestep of each window
-        labels = np.array([label_array[s + config.seq_len - 1] for s in starts])
+        labels = label_array[valid_indices]
 
         self.windows = windows.astype(np.float32)
         self.labels = labels.astype(np.int64)
 
+        n_occ = (labels == 1).sum()
+        n_emp = (labels == 0).sum()
         logger.info(
             "OccupancyDataset: %d windows (seq_len=%d, stride=%d, channels=%d), "
             "class dist: {0: %d, 1: %d}",
             self.n_windows, config.seq_len, config.stride, n_channels,
-            (labels == 0).sum(), (labels == 1).sum(),
+            n_emp, n_occ,
         )
 
     def __len__(self) -> int:
@@ -159,6 +193,48 @@ class OccupancyDataset(Dataset):
         return self.windows.copy(), self.labels.copy()
 
 
+def create_datasets_from_splits(
+    sensor_array: np.ndarray,
+    train_labels: np.ndarray,
+    test_labels: np.ndarray,
+    config: DatasetConfig | None = None,
+) -> tuple[OccupancyDataset, OccupancyDataset]:
+    """Create train/test datasets from a single sensor array with split labels.
+
+    This is the P4 pipeline entry point. Both label arrays are aligned to
+    sensor_array (same length), with -1 for timesteps outside the split's
+    labeled region.
+
+    Parameters
+    ----------
+    sensor_array : np.ndarray
+        Shape (n_timesteps, n_channels). Full sensor data.
+    train_labels : np.ndarray
+        Shape (n_timesteps,). Train labels (-1 for non-train timesteps).
+    test_labels : np.ndarray
+        Shape (n_timesteps,). Test labels (-1 for non-test timesteps).
+    config : DatasetConfig, optional
+        Shared window configuration.
+
+    Returns
+    -------
+    train_dataset, test_dataset : OccupancyDataset
+    """
+    if config is None:
+        config = DatasetConfig()
+
+    train_ds = OccupancyDataset(sensor_array, train_labels, config)
+    test_ds = OccupancyDataset(sensor_array, test_labels, config)
+
+    logger.info(
+        "Created P4 datasets: train=%d, test=%d windows "
+        "(shared sensor array: %d timesteps, %d channels)",
+        len(train_ds), len(test_ds),
+        sensor_array.shape[0], sensor_array.shape[1],
+    )
+    return train_ds, test_ds
+
+
 def create_datasets(
     train_sensor: np.ndarray,
     train_labels: np.ndarray,
@@ -166,7 +242,7 @@ def create_datasets(
     test_labels: np.ndarray,
     config: DatasetConfig | None = None,
 ) -> tuple[OccupancyDataset, OccupancyDataset]:
-    """Create train and test OccupancyDataset instances.
+    """Create train and test OccupancyDataset instances (legacy API).
 
     Parameters
     ----------

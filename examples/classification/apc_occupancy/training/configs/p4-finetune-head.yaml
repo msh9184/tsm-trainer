@@ -1,0 +1,63 @@
+# P4 Head-Only Fine-tuning
+#
+# Freeze MantisV2 backbone, train only the classification head.
+# Lowest overfitting risk. Use after zero-shot sweep identifies best
+# (seq_len, channels) combination.
+#
+# Usage:
+#   cd examples/classification/apc_occupancy
+#   python training/train.py --config training/configs/p4-finetune-head.yaml
+
+mode: finetune
+data_mode: p4
+seed: 42
+output_dir: results/p4-finetune-head
+
+# --- Model ---
+model:
+  pretrained_name: "paris-noah/MantisV2"
+  return_transf_layer: -1      # Use all layers for fine-tuning
+  output_token: "cls_token"    # 256-dim per channel (lighter head)
+  device: "cuda"
+
+# --- Data (P4 pipeline) ---
+data:
+  sensor_csv: "/group-volume/workspace/haeri.kim/Time-Series/data/SmartThings/Samsung_QST_Data/enter_leave/merged_data_with_motion_count_0209_0223.csv"
+  label_csv: "/group-volume/workspace/haeri.kim/Time-Series/data/SmartThings/Samsung_QST_Data/enter_leave/occupancy_events_0210_0219_processed_train.csv"
+  test_label_csv: "/group-volume/workspace/haeri.kim/Time-Series/data/SmartThings/Samsung_QST_Data/enter_leave/occupancy_events_0210_0219_processed_test.csv"
+  label_format: "events"
+  initial_occupancy: 0
+  binarize: true
+  nan_threshold: 0.5
+  add_time_features: false
+  channels:                    # 4-channel primary (M+P+T1+T2)
+    - d620900d_motionSensor
+    - f2e891c6_powerMeter
+    - d620900d_temperatureMeasurement
+    - ccea734e_temperatureMeasurement
+
+# --- Dataset ---
+dataset:
+  seq_len: 288                 # 24h window
+  stride: 1
+  target_seq_len: 512
+
+# --- Fine-tuning ---
+finetune:
+  fine_tuning_type: "head"     # Freeze backbone, train head only
+  num_epochs: 200
+  batch_size: 128
+  learning_rate: 1.0e-3        # Higher LR OK since only head is trained
+  learning_rate_adjusting: true
+  label_smoothing: 0.1
+  head_hidden_dim: 100
+
+# --- Visualization ---
+visualization:
+  enabled: true
+  methods: ["tsne", "pca"]
+  save_format: ["png"]
+  dpi: 300
+  snapshot_interval: 0         # Set >0 for epoch-by-epoch snapshots (see README caveats)
+  create_gif: false
+  gif_fps: 2

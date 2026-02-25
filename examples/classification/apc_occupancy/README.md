@@ -10,10 +10,10 @@ classification foundation model (4.2M parameters).
 |------|--------|
 | **Task** | Binary classification: occupied (1) vs empty (0) |
 | **Input** | Multivariate 5-min binned sensor time series |
-| **Sensors** | Temperature, humidity, illuminance, motion, contact, presence, switch, power, etc. |
+| **Sensors** | Motion, power, temperature (hallway + room), contact, energy |
 | **Model** | MantisV2 (pretrained on CauKer synthetic data, 4.2M params) |
-| **Train** | Jan 31 – Feb 02, 2026 (3 days, ~864 time steps) |
-| **Test** | Jan 26, 2026 (1 day, ~288 time steps) |
+| **Data** | P4 period: Feb 09–23, 2026 (13.3 days, 3,840 timesteps) |
+| **Labels** | Event-based: Feb 10–19 (9.1 days, 2,724 labeled timesteps) |
 
 ## Directory Structure
 
@@ -27,11 +27,15 @@ apc_occupancy/
 ├── training/
 │   ├── train.py                       # Main training/eval script
 │   ├── train.sh                       # GPU launcher
+│   ├── sweep_zeroshot.py              # Systematic zero-shot sweep
 │   └── configs/
-│       ├── zeroshot.yaml              # Phase A: zero-shot with sklearn classifiers
-│       ├── finetune-head.yaml         # Phase B: head-only fine-tuning
-│       ├── finetune-adapter.yaml      # Phase B: adapter + head
-│       └── finetune-full.yaml         # Phase B: full fine-tuning
+│       ├── p4-zeroshot.yaml           # P4: zero-shot (primary)
+│       ├── p4-finetune-head.yaml      # P4: head-only fine-tuning
+│       ├── p4-finetune-full.yaml      # P4: full fine-tuning
+│       ├── zeroshot.yaml              # Legacy: zero-shot
+│       ├── finetune-head.yaml         # Legacy: head-only
+│       ├── finetune-adapter.yaml      # Legacy: adapter + head
+│       └── finetune-full.yaml         # Legacy: full
 ├── evaluation/
 │   ├── __init__.py
 │   ├── metrics.py                     # Accuracy, F1, Precision, Recall, EER, AUC
@@ -64,23 +68,41 @@ pip install imageio
 
 ### 2. Data
 
-The data is expected at the following paths on the GPU server:
+#### P4 Pipeline (Recommended)
+
+Single sensor CSV + separate train/test label CSVs on the GPU server:
 
 ```
-/group-volume/workspace/haeri.kim/Time-Series/data/SmartThings/Samsung_QST_Data/
-├── user01_0125_0126/output/
-│   ├── merged_processed_data.csv      # Test sensor data
-│   └── occupancy_counts.csv           # Test labels
-└── user01_0131_0202/output/
-    ├── merged_processed_data.csv      # Train sensor data
-    └── occupancy_counts.csv           # Train labels
+/group-volume/workspace/haeri.kim/Time-Series/data/SmartThings/Samsung_QST_Data/enter_leave/
+├── merged_data_with_motion_count_0209_0223.csv   # Sensor data (02/09~02/23)
+├── occupancy_events_0210_0219_processed_train.csv # Train labels (events)
+└── occupancy_events_0210_0219_processed_test.csv  # Test labels (events)
 ```
 
-**Data format**:
-- `merged_processed_data.csv`: 5-min binned sensor readings with `time` column + sensor columns
-- `occupancy_counts.csv`: 5-min binned occupancy counts with `time,occupancy` columns
+**Key design**: The sensor file covers the full 13-day range. Labels only cover
+the middle ~9 days. Context windows can reference sensor data outside the
+labeled range (e.g., pre-label sensor data for context), preventing information
+loss at label boundaries.
 
-To use different data paths, edit the `data` section in the YAML config files.
+**Label format**: Event-based CSV with `time, Status, Head-count, At-home count`
+columns. The preprocessing pipeline replays ENTER_HOME/LEAVE_HOME events
+chronologically to generate per-timestep binary labels.
+
+**Selected sensors** (6 channels):
+
+| Short | CSV Column | Type |
+|-------|------------|------|
+| M | `d620900d_motionSensor` | Continuous (count) |
+| P | `f2e891c6_powerMeter` | Continuous (W) |
+| T1 | `d620900d_temperatureMeasurement` | Continuous (°C) |
+| T2 | `ccea734e_temperatureMeasurement` | Continuous (°C) |
+| C | `408981c2_contactSensor` | Binary (0/1) |
+| E | `f2e891c6_energyMeter` | Continuous (Wh) |
+
+#### Legacy Pipeline
+
+Separate train/test sensor+label CSV pairs (per-timestep counts format).
+Set `data_mode: legacy` in the config. See legacy config files for paths.
 
 ### 3. Download Pretrained Model
 
@@ -107,29 +129,63 @@ export HF_HOME=/group-volume/hf_cache
 ```bash
 cd examples/classification/apc_occupancy
 
-# Phase A: Zero-shot evaluation
-python training/train.py --config training/configs/zeroshot.yaml
+# P4 Zero-shot (primary experiment: 24h window, 4 sensors)
+python training/train.py --config training/configs/p4-zeroshot.yaml
 
-# Phase B: Head-only fine-tuning
-python training/train.py --config training/configs/finetune-head.yaml
+# P4 Head-only fine-tuning
+python training/train.py --config training/configs/p4-finetune-head.yaml
 
-# Phase B: Full fine-tuning
-python training/train.py --config training/configs/finetune-full.yaml
+# P4 Full fine-tuning
+python training/train.py --config training/configs/p4-finetune-full.yaml
 
 # Using the launcher script
-bash training/train.sh --config training/configs/zeroshot.yaml
-bash training/train.sh --config training/configs/finetune-head.yaml --device cpu
+bash training/train.sh --config training/configs/p4-zeroshot.yaml
+bash training/train.sh --config training/configs/p4-finetune-head.yaml --device cpu
 ```
 
-### Override Options
+### CLI Override Options
 
 ```bash
-# Override device
-python training/train.py --config training/configs/zeroshot.yaml --device cpu
+# Override sensor channels (2-channel baseline)
+python training/train.py --config training/configs/p4-zeroshot.yaml \
+    --channels d620900d_motionSensor f2e891c6_powerMeter
 
-# Override random seed
-python training/train.py --config training/configs/zeroshot.yaml --seed 123
+# Override window length (must be multiple of 32)
+python training/train.py --config training/configs/p4-zeroshot.yaml --seq-len 64
+
+# Add hour-of-day cyclical features
+python training/train.py --config training/configs/p4-zeroshot.yaml --add-time-features
+
+# Disable visualization for faster iteration
+python training/train.py --config training/configs/p4-zeroshot.yaml --no-viz
+
+# Override device and seed
+python training/train.py --config training/configs/p4-zeroshot.yaml --device cpu --seed 123
 ```
+
+## Zero-shot Sweep
+
+Systematically evaluate combinations of (seq_len, channels, time_features):
+
+```bash
+# Full sweep: 16 sensor combos × 4 seq_lens = 64 experiments
+python training/sweep_zeroshot.py --config training/configs/p4-zeroshot.yaml
+
+# Quick sweep: 5 key combos × 1 seq_len (phase 1 only)
+python training/sweep_zeroshot.py --config training/configs/p4-zeroshot.yaml --quick
+
+# Custom seq_lens
+python training/sweep_zeroshot.py --config training/configs/p4-zeroshot.yaml \
+    --seq-lens 64 288 512
+```
+
+**Outputs** (in `results/p4-sweep/`):
+- `sweep_results.csv`: All experiment results (one row per classifier per config)
+- `sweep_summary.json`: Best configurations per metric
+- Console summary table with sorted results
+
+**Sensor combinations**: M+P (base), then adding T1, T2, C, E in all
+C(4,0)+C(4,1)+C(4,2)+C(4,3)+C(4,4) = 16 combinations.
 
 ## Approach
 
@@ -139,7 +195,7 @@ python training/train.py --config training/configs/zeroshot.yaml --seed 123
 2. Process each sensor channel independently through the backbone
 3. Concatenate per-channel embeddings → feature vector of `512 × n_channels` dimensions
 4. Train simple classifiers (Nearest Centroid, Random Forest, SVM) on frozen features
-5. Evaluate on held-out test day
+5. Evaluate on held-out test period
 
 This requires **no gradient computation** and runs in seconds.
 
@@ -182,11 +238,31 @@ The classification head architecture:
 LayerNorm(in_dim) → Linear(in_dim, 100) → ReLU → Dropout(0.1) → Linear(100, 2)
 ```
 
-### Phase C: Advanced (Future Work)
+### Window Length Selection
 
-- MOMENT (385M) + LoRA fine-tuning
-- Forecasting-as-extractor (arXiv:2510.26777)
-- Multi-scale self-ensembling
+| seq_len | Time Span | Interpolation | Use Case |
+|---------|-----------|---------------|----------|
+| 64 | 5h 20m | 8× to 512 | Short context, time features required |
+| 128 | 10h 40m | 4× to 512 | Half-day patterns |
+| **288** | **24h** | **1.78× to 512** | **Full daily cycle (recommended)** |
+| 512 | 42h 40m | None (native) | Maximum context, no interpolation |
+
+The primary configuration uses `seq_len=288` (24 hours), which captures the
+complete daily occupancy cycle (night sleep → morning departure → daytime
+absence → evening return) with minimal interpolation distortion.
+
+### Hour-of-Day Features
+
+Optional cyclical time encoding (`add_time_features: true`) appends two
+extra channels:
+- `hour_sin = sin(2π × hour / 24)`
+- `hour_cos = cos(2π × hour / 24)`
+
+**When to use**:
+- `seq_len=64` (5h): **Required** — window is too short to infer time of day
+- `seq_len=128` (10h): Recommended — partially captures daily patterns
+- `seq_len=288` (24h): Optional — daily cycle is inherent in the window
+- `seq_len=512` (42h): Not needed — time information is implicit
 
 ## Configuration Reference
 
@@ -194,20 +270,31 @@ LayerNorm(in_dim) → Linear(in_dim, 100) → ReLU → Dropout(0.1) → Linear(1
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `sensor_csv` | str | — | Path to train sensor CSV |
-| `label_csv` | str | — | Path to train occupancy counts CSV |
-| `test_sensor_csv` | str | — | Path to test sensor CSV |
-| `test_label_csv` | str | — | Path to test occupancy counts CSV |
+| `sensor_csv` | str | — | Path to sensor data CSV |
+| `label_csv` | str | — | Path to train label CSV |
+| `test_label_csv` | str | — | Path to test label CSV |
+| `label_format` | str | counts | Label format: "events" or "counts" |
+| `initial_occupancy` | int | 0 | Initial occupancy for event-based labels |
 | `nan_threshold` | float | 0.5 | Drop channels with NaN fraction above this |
 | `binarize` | bool | true | Convert counts to binary (>0 → 1) |
 | `channels` | list | null | Explicit channel list (null = auto-select) |
 | `exclude_channels` | list | [] | Channel names to always exclude |
+| `add_time_features` | bool | false | Append hour_sin/hour_cos channels |
+
+### Top-Level
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `mode` | str | zeroshot | Training mode: "zeroshot" or "finetune" |
+| `data_mode` | str | p4 | Data pipeline: "p4" (new) or "legacy" |
+| `seed` | int | 42 | Random seed |
+| `output_dir` | str | results | Output directory |
 
 ### Dataset Section
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `seq_len` | int | 64 | Window length (must be multiple of 32) |
+| `seq_len` | int | 288 | Window length (must be multiple of 32) |
 | `stride` | int | 1 | Stride between windows |
 | `target_seq_len` | int | 512 | Resize windows to this length (multiple of 32) |
 
@@ -259,19 +346,13 @@ MantisV2 processes each sensor channel **independently** through a shared backbo
 (channel independence / CI strategy). For `n_channels` sensors with hidden dimension
 `d`, the final embedding is `n_channels × d` dimensional.
 
-### Multivariate Mode (Default)
-All sensors are treated as equal input channels. No distinction between "target"
-and "auxiliary" variables.
+### Embedding Dimensions by Channel Count
 
-### Covariate Support (Future)
-Some sensor channels may have future values available at inference time (e.g.,
-scheduled events, weather forecasts). This can be handled by:
-1. Designating covariate channels in the config (`channels` field)
-2. Using a custom head that weights covariate features differently
-3. Extending to a model that natively supports covariates (e.g., Chronos-2)
-
-Currently, all channels are treated identically by MantisV2. Covariate-aware
-classification is planned for Phase C.
+| Channels | output_token | Per-Channel | Total Embedding | Head Input |
+|----------|-------------|-------------|-----------------|------------|
+| 2 (M+P) | combined | 512 | 1,024 | LayerNorm(1024) |
+| 4 (M+P+T1+T2) | combined | 512 | 2,048 | LayerNorm(2048) |
+| 6 (all) | combined | 512 | 3,072 | LayerNorm(3072) |
 
 ## Metrics
 
@@ -293,23 +374,18 @@ Results are saved to `{output_dir}/eval_report.json`:
 ```json
 {
   "mode": "zeroshot",
+  "data_mode": "p4",
   "model": {
     "pretrained": "paris-noah/MantisV2",
     "return_transf_layer": 2,
     "output_token": "combined"
   },
+  "dataset": {"seq_len": 288, "stride": 1, "target_seq_len": 512},
   "results": {
     "svm": {
       "accuracy": 0.85,
       "f1": 0.72,
-      "precision": 0.78,
-      "recall": 0.67,
-      "eer": 0.18,
-      "eer_threshold": 0.42,
-      "roc_auc": 0.92,
-      "confusion_matrix": [[150, 30], [20, 88]],
-      "n_samples": 288,
-      "class_distribution": {"0": 180, "1": 108}
+      ...
     }
   }
 }
@@ -322,7 +398,7 @@ Saved to `{output_dir}/predictions_{classifier}.npz` containing `y_true`,
 re-evaluation:
 
 ```bash
-python evaluation/evaluate.py --predictions results/zeroshot/predictions_svm.npz
+python evaluation/evaluate.py --predictions results/p4-zeroshot/predictions_svm.npz
 ```
 
 ### Visualization Outputs
