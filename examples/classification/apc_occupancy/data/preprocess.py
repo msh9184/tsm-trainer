@@ -180,16 +180,14 @@ def _load_label_events(
             current_count = int(event_counts[event_idx])
             event_idx += 1
 
-        # Only label timesteps within the event range
+        # Only label timesteps within the event range [first_event, last_event]
         if n_events > 0 and ts >= event_times[0]:
             if event_idx >= n_events and ts > event_times[-1]:
                 # After last event: mark as unlabeled
                 labels[i] = -1
             else:
                 labels[i] = current_count
-        else:
-            # Before first event: use initial_occupancy
-            labels[i] = initial_occupancy
+        # Before first event: unlabeled (not enough info to assign a label)
 
     if binarize:
         # Keep -1 as unlabeled, binarize the rest
