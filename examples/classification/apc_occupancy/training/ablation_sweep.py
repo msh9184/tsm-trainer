@@ -270,6 +270,118 @@ def save_csv(results: list[dict], path: Path) -> None:
             writer.writerow({k: r.get(k, "") for k in RESULT_FIELDS})
 
 
+def save_matrix_csv(
+    matrix: np.ndarray, row_labels: list, col_labels: list, path: Path,
+) -> None:
+    """Save 2D matrix as CSV with row/column headers (heatmap text equivalent).
+
+    Output format (readable as-is or loadable via pd.read_csv(index_col=0)):
+        ,ch1,ch2,ch3,...
+        L0,0.7234,0.5123,...
+        L1,0.8012,...
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([""] + list(col_labels))
+        for i, rl in enumerate(row_labels):
+            row_vals = [
+                f"{matrix[i, j]:.4f}" if not np.isnan(matrix[i, j]) else ""
+                for j in range(matrix.shape[1])
+            ]
+            writer.writerow([rl] + row_vals)
+
+
+def save_threshold_curves_csv(
+    items: list[dict], y_test: np.ndarray, path: Path,
+) -> None:
+    """Save threshold x metric grid as CSV (threshold curve text equivalent).
+
+    One row per (config, threshold) pair with F1, Accuracy, Precision, Recall.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    thresholds = np.arange(0.05, 0.96, 0.02)
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["config", "threshold", "f1", "accuracy", "precision", "recall"])
+        for item in items:
+            prob = item["y_prob"]
+            for t in thresholds:
+                pred = (prob >= t).astype(int)
+                writer.writerow([
+                    item["name"], f"{t:.2f}",
+                    f"{f1_score(y_test, pred, zero_division=0):.4f}",
+                    f"{accuracy_score(y_test, pred):.4f}",
+                    f"{precision_score(y_test, pred, zero_division=0):.4f}",
+                    f"{recall_score(y_test, pred, zero_division=0):.4f}",
+                ])
+
+
+def save_roc_curves_csv(roc_items: list[dict], path: Path) -> None:
+    """Save ROC curve data (FPR, TPR) as CSV (ROC plot text equivalent).
+
+    One row per (config, fpr/tpr point). Can reconstruct ROC curve from this data.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["config", "auc", "fpr", "tpr"])
+        for item in roc_items:
+            if item.get("fpr") is None:
+                continue
+            for fpr_val, tpr_val in zip(item["fpr"], item["tpr"]):
+                writer.writerow([
+                    item["name"], f"{item['auc']:.4f}",
+                    f"{fpr_val:.6f}", f"{tpr_val:.6f}",
+                ])
+
+
+def compute_tsne_separation(
+    Z: np.ndarray, y: np.ndarray,
+) -> dict:
+    """Compute cluster separation metrics on high-dim embeddings (no t-SNE needed).
+
+    Returns dict with silhouette_score, centroid_l2, cosine_sim,
+    between_class_var_ratio — numeric summary of what t-SNE visually shows.
+    """
+    from sklearn.metrics import silhouette_score as _silhouette
+
+    mask0 = y == 0
+    mask1 = y == 1
+    if mask0.sum() < 2 or mask1.sum() < 2:
+        return {"silhouette": float("nan"), "centroid_l2": float("nan"),
+                "cosine_sim": float("nan"), "var_ratio": float("nan")}
+
+    c0 = Z[mask0].mean(axis=0)
+    c1 = Z[mask1].mean(axis=0)
+    centroid_l2 = float(np.linalg.norm(c1 - c0))
+    dot = np.dot(c0, c1)
+    norms = np.linalg.norm(c0) * np.linalg.norm(c1)
+    cosine_sim = float(dot / norms) if norms > 0 else float("nan")
+
+    # Between-class / total variance ratio
+    grand_mean = Z.mean(axis=0)
+    ss_between = mask0.sum() * np.sum((c0 - grand_mean) ** 2) + \
+                 mask1.sum() * np.sum((c1 - grand_mean) ** 2)
+    ss_total = np.sum((Z - grand_mean) ** 2)
+    var_ratio = float(ss_between / ss_total) if ss_total > 0 else 0.0
+
+    # Silhouette (subsample if large for speed)
+    n = len(y)
+    if n > 2000:
+        idx = np.random.RandomState(42).choice(n, 2000, replace=False)
+        sil = float(_silhouette(Z[idx], y[idx], metric="euclidean"))
+    else:
+        sil = float(_silhouette(Z, y, metric="euclidean"))
+
+    return {
+        "silhouette": sil,
+        "centroid_l2": centroid_l2,
+        "cosine_sim": cosine_sim,
+        "var_ratio": var_ratio,
+    }
+
+
 # ============================================================================
 # Visualization helpers
 # ============================================================================
@@ -608,23 +720,55 @@ def part1_single_channel(
     save_json(results, d / "results.json")
     save_csv(results, d / "results.csv")
 
-    if do_plots:
-        ch_labels = [short_name(c) for c in all_channels]
-        layer_labels = [f"L{l}" for l in LAYERS]
+    # Build heatmap matrices and save as CSV (always — text-based heatmap equivalent)
+    ch_labels = [short_name(c) for c in all_channels]
+    layer_labels = [f"L{l}" for l in LAYERS]
 
-        for mname, mkey, cm in [
-            ("AUC", "test_auc", "RdYlGn"),
-            ("EER", "test_eer", "RdYlGn_r"),
-            ("Opt-F1", "opt_f1", "RdYlGn"),
-        ]:
-            mat = np.full((len(LAYERS), len(all_channels)), np.nan)
-            for r in results:
-                li = LAYERS.index(int(r["layer"]))
-                ci = ch_labels.index(r["channels"])
-                mat[li, ci] = r[mkey]
+    for mname, mkey, cm in [
+        ("AUC", "test_auc", "RdYlGn"),
+        ("EER", "test_eer", "RdYlGn_r"),
+        ("Opt-F1", "opt_f1", "RdYlGn"),
+        ("Accuracy", "test_acc", "RdYlGn"),
+        ("F1", "test_f1", "RdYlGn"),
+    ]:
+        mat = np.full((len(LAYERS), len(all_channels)), np.nan)
+        for r in results:
+            li = LAYERS.index(int(r["layer"]))
+            ci = ch_labels.index(r["channels"])
+            mat[li, ci] = r[mkey]
+        save_matrix_csv(mat, layer_labels, ch_labels, d / f"heatmap_{mkey}.csv")
+        if do_plots and mkey in ("test_auc", "test_eer", "opt_f1"):
             plot_heatmap(mat, layer_labels, ch_labels,
                          f"Part 1: {mname} — Single Channel x Layer",
                          d / f"heatmap_{mkey}.png", mname, cm)
+
+    # Embedding separation metrics — text-based t-SNE equivalent
+    # (numeric cluster quality for each layer×channel, without needing plots)
+    print("\n  Computing embedding separation metrics...")
+    sep_rows = []
+    for layer in LAYERS:
+        for ch in all_channels:
+            _, Z_te = compose_embeddings(cache, [layer], [ch])
+            sep = compute_tsne_separation(Z_te, y_test)
+            r_match = [r for r in results
+                       if r["layer"] == str(layer) and r["_full_ch"] == ch]
+            auc_val = r_match[0]["test_auc"] if r_match else float("nan")
+            sep_rows.append({
+                "layer": layer, "channel": short_name(ch),
+                "auc": auc_val,
+                **sep,
+            })
+    sep_path = d / "embedding_separation_metrics.csv"
+    sep_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(sep_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            "layer", "channel", "auc", "silhouette", "centroid_l2", "cosine_sim", "var_ratio",
+        ])
+        writer.writeheader()
+        for row in sep_rows:
+            writer.writerow({k: f"{v:.4f}" if isinstance(v, float) else v
+                             for k, v in row.items()})
+    print(f"  Saved: {sep_path}")
 
     if do_tsne:
         tsne_d = d / "tsne"
@@ -694,22 +838,54 @@ def part2_channel_combos(
     save_json(results, d / "results.json")
     save_csv(results, d / "results.csv")
 
-    if do_plots:
-        combo_labels = [combo_label(c) for c in combos]
-        layer_labels = [f"L{l}" for l in LAYERS]
-        for mname, mkey, cm in [
-            ("AUC", "test_auc", "RdYlGn"),
-            ("EER", "test_eer", "RdYlGn_r"),
-            ("Opt-F1", "opt_f1", "RdYlGn"),
-        ]:
-            mat = np.full((len(LAYERS), len(combos)), np.nan)
-            for r in results:
-                li = LAYERS.index(int(r["layer"]))
-                ci = combo_labels.index(r["channels"])
-                mat[li, ci] = r[mkey]
+    # Build heatmap matrices and save as CSV (always — text-based heatmap equivalent)
+    combo_labels = [combo_label(c) for c in combos]
+    layer_labels = [f"L{l}" for l in LAYERS]
+    for mname, mkey, cm in [
+        ("AUC", "test_auc", "RdYlGn"),
+        ("EER", "test_eer", "RdYlGn_r"),
+        ("Opt-F1", "opt_f1", "RdYlGn"),
+        ("Accuracy", "test_acc", "RdYlGn"),
+        ("F1", "test_f1", "RdYlGn"),
+    ]:
+        mat = np.full((len(LAYERS), len(combos)), np.nan)
+        for r in results:
+            li = LAYERS.index(int(r["layer"]))
+            ci = combo_labels.index(r["channels"])
+            mat[li, ci] = r[mkey]
+        save_matrix_csv(mat, layer_labels, combo_labels, d / f"heatmap_{mkey}.csv")
+        if do_plots and mkey in ("test_auc", "test_eer", "opt_f1"):
             plot_heatmap(mat, layer_labels, combo_labels,
                          f"Part 2: {mname} — Channel Combos x Layer",
                          d / f"heatmap_{mkey}.png", mname, cm)
+
+    # Embedding separation metrics for top-20 channel combos
+    print("\n  Computing embedding separation metrics (top combos)...")
+    top20 = sorted(results, key=lambda x: x.get("test_auc", 0), reverse=True)[:20]
+    sep_rows = []
+    for r in top20:
+        try:
+            _, Z_te = compose_embeddings(cache, [int(r["layer"])], r["_ch_list"])
+        except KeyError:
+            continue
+        sep = compute_tsne_separation(Z_te, y_test)
+        sep_rows.append({
+            "layer": r["layer"], "channels": r["channels"],
+            "n_ch": r["n_ch"], "auc": r["test_auc"],
+            **sep,
+        })
+    sep_path = d / "embedding_separation_metrics.csv"
+    sep_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(sep_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            "layer", "channels", "n_ch", "auc",
+            "silhouette", "centroid_l2", "cosine_sim", "var_ratio",
+        ])
+        writer.writeheader()
+        for row in sep_rows:
+            writer.writerow({k: f"{v:.4f}" if isinstance(v, float) else v
+                             for k, v in row.items()})
+    print(f"  Saved: {sep_path}")
 
     if do_tsne:
         top10 = sorted(results, key=lambda x: x.get("test_auc", 0), reverse=True)[:10]
@@ -1025,6 +1201,14 @@ def part5_threshold_sensitivity(
     d = out_dir / "part5_threshold"
     save_json(results, d / "results.json")
 
+    # Save threshold curves and ROC data as CSV (always — text-based plot equivalent)
+    if threshold_data:
+        save_threshold_curves_csv(threshold_data, y_test, d / "threshold_curves.csv")
+        print(f"\n  Saved: {d / 'threshold_curves.csv'}")
+    if roc_items:
+        save_roc_curves_csv(roc_items, d / "roc_curves.csv")
+        print(f"  Saved: {d / 'roc_curves.csv'}")
+
     if do_plots:
         if threshold_data:
             plot_threshold_curves(threshold_data, d / "threshold_sensitivity.png")
@@ -1088,11 +1272,63 @@ def generate_summary(all_results, out_dir):
     with open(sd / "statistics.json", "w") as f:
         json.dump(stats, f, indent=2)
 
+    # Generate text-based manifest of all output files
+    manifest_lines = [
+        "=" * 70,
+        "ABLATION SWEEP OUTPUT MANIFEST",
+        "=" * 70,
+        "",
+        "TEXT-BASED FILES (shareable — no PNG needed):",
+        "  summary/all_experiments.csv       All experiments, all metrics",
+        "  summary/all_experiments.json      Same as above in JSON",
+        "  summary/top20_by_auc.json         Top 20 by AUC",
+        "  summary/top20_by_eer.json         Top 20 by EER",
+        "  summary/statistics.json           Best config summary",
+        "  part1_single_channel/results.csv  Layer x Single Channel results",
+        "  part1_single_channel/heatmap_*.csv  Layer x Channel matrices (heatmap data)",
+        "  part1_single_channel/embedding_separation_metrics.csv  Cluster quality",
+        "  part2_channel_combos/results.csv  Layer x Channel Combo results",
+        "  part2_channel_combos/heatmap_*.csv  Layer x Combo matrices (heatmap data)",
+        "  part2_channel_combos/embedding_separation_metrics.csv  Cluster quality",
+        "  part3_multilayer_fusion/results.csv  Multi-layer fusion results",
+        "  part4_hybrid/results.csv          Stat vs MantisV2 vs Hybrid results",
+        "  part5_threshold/results.json      Threshold sensitivity summary",
+        "  part5_threshold/threshold_curves.csv  F1/Acc/Prec/Rec vs threshold",
+        "  part5_threshold/roc_curves.csv    ROC curve data (FPR, TPR)",
+        "",
+        "VISUALIZATION FILES (PNG — for local analysis):",
+        "  part1_single_channel/heatmap_*.png     Layer x Channel heatmaps",
+        "  part1_single_channel/tsne/*.png         t-SNE scatter plots",
+        "  part2_channel_combos/heatmap_*.png      Layer x Combo heatmaps",
+        "  part2_channel_combos/tsne/*.png          t-SNE scatter plots",
+        "  part3_multilayer_fusion/bar_chart_auc.png  AUC bar chart",
+        "  part3_multilayer_fusion/tsne/*.png       t-SNE scatter plots",
+        "  part4_hybrid/comparison_auc.png          Stat/MantisV2/Hybrid bars",
+        "  part5_threshold/threshold_sensitivity.png  Threshold curves",
+        "  part5_threshold/roc_overlay.png          ROC overlay curves",
+        "",
+        "KEY FILES TO SHARE (for remote analysis without PNG):",
+        "  1. /tmp/ablation_full.log               Full console output",
+        "  2. summary/all_experiments.csv           Complete results table",
+        "  3. summary/statistics.json               Best configs",
+        "  4. part1_single_channel/heatmap_test_auc.csv  AUC heatmap data",
+        "  5. part1_single_channel/heatmap_test_eer.csv  EER heatmap data",
+        "  6. part2_channel_combos/heatmap_test_auc.csv  Combo AUC data",
+        "  7. part3_multilayer_fusion/results.csv   Multi-layer comparison",
+        "  8. part5_threshold/threshold_curves.csv  Threshold sensitivity",
+        "  9. part5_threshold/roc_curves.csv        ROC curve data",
+        " 10. part1_single_channel/embedding_separation_metrics.csv",
+        "=" * 70,
+    ]
+    with open(out_dir / "manifest.txt", "w") as f:
+        f.write("\n".join(manifest_lines))
+
     print(f"\n  Total: {stats['total_experiments']} experiments")
     if best:
         print(f"  Best AUC: {best.get('test_auc', 0):.4f}  ({stats['best_auc_config']})")
     if best_eer:
         print(f"  Best EER: {best_eer.get('test_eer', 0):.4f}  ({stats['best_eer_config']})")
+    print(f"  Manifest: {out_dir / 'manifest.txt'}")
 
 
 # ============================================================================
