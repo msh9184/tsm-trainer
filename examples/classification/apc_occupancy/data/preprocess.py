@@ -219,6 +219,15 @@ def _filter_channels(
     exclude_channels: list[str],
 ) -> pd.DataFrame:
     """Filter sensor channels by NaN fraction and explicit lists."""
+    # Drop non-numeric columns first (e.g., string-valued sensor states)
+    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    non_numeric = sorted(set(df.columns) - set(numeric_cols))
+    if non_numeric:
+        logger.info(
+            "Dropped %d non-numeric channels: %s", len(non_numeric), non_numeric,
+        )
+        df = df[numeric_cols]
+
     if exclude_channels:
         cols_before = set(df.columns)
         for pattern in exclude_channels:
