@@ -1,0 +1,37 @@
+seed: 42
+output_dir: results/enter_leave_zeroshot
+
+model:
+  pretrained_name: "paris-noah/MantisV2"
+  layers: [0, 1, 2, 3, 4, 5]
+  output_token: "combined"
+  device: "cuda"
+
+data:
+  sensor_csv: "/group-volume/workspace/sunghwan.mun/apc_data/merged_data_with_motion_count_0209_0223_interval1.csv"
+  events_csv: "/group-volume/workspace/sunghwan.mun/apc_data/occupancy_events_0210_0219_processed.csv"
+  column_names_csv: "/group-volume/workspace/sunghwan.mun/apc_data/merged_data_with_motion_count_0209_0223.csv"
+  include_none: false
+  nan_threshold: 0.3
+  channels:
+    - d620900d_motionSensor
+    - f2e891c6_powerMeter
+    - d620900d_temperatureMeasurement
+    - ccea734e_temperatureMeasurement
+    - 408981c2_contactSensor
+    - f2e891c6_energyMeter
+
+dataset:
+  seq_len: 512               # 512min = 8.5h (MantisV2 native, no interpolation)
+  target_seq_len: null        # No interpolation at native length
+
+cv:
+  methods: [loocv, stratified_kfold, lodo]
+  stratified_k: 5
+  stratified_repeats: 10
+  primary_method: loocv
+
+classifiers:
+  - random_forest
+  - svm
+  - nearest_centroid
