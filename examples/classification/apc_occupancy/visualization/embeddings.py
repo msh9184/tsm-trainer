@@ -95,11 +95,11 @@ def reduce_dimensions(
 
     if method == "tsne":
         perplexity = kwargs.pop("perplexity", min(30, max(1, n_samples - 1)))
-        n_iter = kwargs.pop("n_iter", 1000)
+        max_iter = kwargs.pop("max_iter", kwargs.pop("n_iter", 1000))
         tsne = TSNE(
             n_components=2,
             perplexity=perplexity,
-            n_iter=n_iter,
+            max_iter=max_iter,
             random_state=random_state,
             **kwargs,
         )

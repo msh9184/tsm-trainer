@@ -246,14 +246,22 @@ def _load_data_p4(
             f"must have the same length (aligned to sensor timestamps)"
         )
 
-    # Verify no overlap between train and test labeled regions
+    # Resolve overlap: remove train-labeled timesteps from test labels
+    # to prevent data leakage. Train takes priority for shared timesteps.
     train_mask = train_labels >= 0
     test_mask = test_labels >= 0
     overlap = (train_mask & test_mask).sum()
     if overlap > 0:
         logger.warning(
-            "Train/test label overlap detected: %d timesteps. "
-            "This may cause label leakage.", overlap,
+            "Train/test label overlap: %d timesteps. "
+            "Removing overlap from test set (train takes priority).", overlap,
+        )
+        test_labels = test_labels.copy()
+        test_labels[train_mask] = -1
+        test_mask = test_labels >= 0
+        logger.info(
+            "After overlap removal: test labels=%d (removed %d)",
+            test_mask.sum(), overlap,
         )
 
     n_train = train_mask.sum()

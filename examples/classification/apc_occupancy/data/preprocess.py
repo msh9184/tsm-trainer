@@ -180,16 +180,14 @@ def _load_label_events(
             current_count = int(event_counts[event_idx])
             event_idx += 1
 
-        # Only label timesteps within the event range
+        # Only label timesteps within the event range [first_event, last_event]
         if n_events > 0 and ts >= event_times[0]:
             if event_idx >= n_events and ts > event_times[-1]:
                 # After last event: mark as unlabeled
                 labels[i] = -1
             else:
                 labels[i] = current_count
-        else:
-            # Before first event: use initial_occupancy
-            labels[i] = initial_occupancy
+        # Before first event: unlabeled (not enough info to assign a label)
 
     if binarize:
         # Keep -1 as unlabeled, binarize the rest
@@ -221,6 +219,15 @@ def _filter_channels(
     exclude_channels: list[str],
 ) -> pd.DataFrame:
     """Filter sensor channels by NaN fraction and explicit lists."""
+    # Drop non-numeric columns first (e.g., string-valued sensor states)
+    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    non_numeric = sorted(set(df.columns) - set(numeric_cols))
+    if non_numeric:
+        logger.info(
+            "Dropped %d non-numeric channels: %s", len(non_numeric), non_numeric,
+        )
+        df = df[numeric_cols]
+
     if exclude_channels:
         cols_before = set(df.columns)
         for pattern in exclude_channels:
