@@ -41,7 +41,6 @@ import json
 import logging
 import time
 from collections import defaultdict
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -67,10 +66,8 @@ from evaluation.metrics import (
     EventClassificationMetrics,
     aggregate_cv_predictions,
     aggregate_repeated_cv_predictions,
-    compute_event_metrics,
 )
 from visualization.style import (
-    CLASS_COLORS, CLASS_NAMES, ACCENT_COLOR,
     FIGSIZE_SINGLE,
     setup_style, save_figure, configure_output,
 )
@@ -199,6 +196,39 @@ def build_classifiers(names: list[str], seed: int = 42) -> dict:
 
 
 # ============================================================================
+# Probability extraction helper
+# ============================================================================
+
+def _extract_class1_prob(clf, proba: np.ndarray) -> np.ndarray:
+    """Extract probability of class 1 from predict_proba output.
+
+    Uses ``clf.classes_`` to correctly map columns to class labels,
+    handling edge cases where the training fold may have seen only one class
+    (in which case predict_proba returns fewer columns than expected).
+
+    Parameters
+    ----------
+    clf : fitted classifier with predict_proba
+    proba : np.ndarray, shape (n_samples, n_seen_classes)
+
+    Returns
+    -------
+    np.ndarray, shape (n_samples,) — probability of class 1.
+    """
+    if hasattr(clf, "classes_"):
+        classes = list(clf.classes_)
+        if 1 in classes:
+            return proba[:, classes.index(1)]
+        # Class 1 not seen during training — probability is 0
+        return np.zeros(proba.shape[0], dtype=np.float64)
+
+    # Fallback: assume standard column ordering [class_0, class_1, ...]
+    if proba.shape[1] >= 2:
+        return proba[:, 1]
+    return proba[:, 0]
+
+
+# ============================================================================
 # Cross-validation runners
 # ============================================================================
 
@@ -250,11 +280,18 @@ def run_loocv(
         y_pred_all[i] = clf.predict(Z_test_s)[0]
 
         if has_prob:
-            probs = clf.predict_proba(Z_test_s)[0]
+            proba = clf.predict_proba(Z_test_s)  # (1, n_seen_classes)
             if is_binary:
-                y_prob_all[i] = probs[1] if len(probs) == 2 else probs[0]
+                y_prob_all[i] = _extract_class1_prob(clf, proba)[0]
             else:
-                y_prob_all[i] = probs
+                # Map to full n_classes vector using clf.classes_
+                if hasattr(clf, "classes_") and len(clf.classes_) < n_classes:
+                    full_prob = np.zeros(n_classes, dtype=np.float64)
+                    for ci, cls in enumerate(clf.classes_):
+                        full_prob[cls] = proba[0, ci]
+                    y_prob_all[i] = full_prob
+                else:
+                    y_prob_all[i] = proba[0]
 
     return aggregate_cv_predictions(
         y, y_pred_all, y_prob_all,
@@ -309,19 +346,30 @@ def run_stratified_kfold(
 
         preds = clf.predict(Z_test_s)
 
-        probs = None
+        probs_class1 = None
+        probs_full = None
         if has_prob:
-            probs = clf.predict_proba(Z_test_s)
+            proba = clf.predict_proba(Z_test_s)
+            if is_binary:
+                probs_class1 = _extract_class1_prob(clf, proba)
+            else:
+                # Map to full n_classes columns if fewer seen
+                if hasattr(clf, "classes_") and len(clf.classes_) < n_classes:
+                    full = np.zeros((len(Z_test_s), n_classes), dtype=np.float64)
+                    for ci, cls in enumerate(clf.classes_):
+                        full[:, cls] = proba[:, ci]
+                    probs_full = full
+                else:
+                    probs_full = proba
 
         for j, idx in enumerate(test_idx):
             sample_indices_all.append(idx)
             y_true_all.append(y_test[j])
             y_pred_all.append(preds[j])
-            if probs is not None:
-                if is_binary:
-                    y_prob_all.append(probs[j, 1] if probs.shape[1] == 2 else probs[j, 0])
-                else:
-                    y_prob_all.append(probs[j])  # full (n_classes,) vector
+            if is_binary and probs_class1 is not None:
+                y_prob_all.append(probs_class1[j])
+            elif not is_binary and probs_full is not None:
+                y_prob_all.append(probs_full[j])
 
     sample_indices_all = np.array(sample_indices_all)
     y_true_all = np.array(y_true_all, dtype=np.int64)
@@ -403,15 +451,32 @@ def run_lodo(
         y_pred_all.extend(preds.tolist())
 
         if has_prob:
-            probs = clf.predict_proba(Z_test_s)
-            for p in probs:
-                if is_binary:
-                    y_prob_all.append(p[1] if len(p) == 2 else p[0])
+            proba = clf.predict_proba(Z_test_s)
+            if is_binary:
+                class1_probs = _extract_class1_prob(clf, proba)
+                y_prob_all.extend(class1_probs.tolist())
+            else:
+                # Map to full n_classes columns if fewer seen
+                if hasattr(clf, "classes_") and len(clf.classes_) < n_classes:
+                    full = np.zeros((len(Z_test_s), n_classes), dtype=np.float64)
+                    for ci, cls in enumerate(clf.classes_):
+                        full[:, cls] = proba[:, ci]
+                    for row in full:
+                        y_prob_all.append(row)
                 else:
-                    y_prob_all.append(p)  # full (n_classes,) vector
+                    for row in proba:
+                        y_prob_all.append(row)
 
     if skipped > 0:
         logger.warning("LODO: skipped %d/%d day folds due to single-class training sets", skipped, n_folds)
+
+    if len(y_true_all) == 0:
+        logger.error("LODO: all folds skipped — no predictions to aggregate")
+        from evaluation.metrics import compute_event_metrics
+        return compute_event_metrics(
+            np.array([0, 1]), np.array([0, 0]),
+            class_names=class_names,
+        )
 
     y_true_all = np.array(y_true_all, dtype=np.int64)
     y_pred_all = np.array(y_pred_all, dtype=np.int64)
