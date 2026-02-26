@@ -101,16 +101,6 @@ KEY_CHANNELS = {
     "ccea734e_temperatureMeasurement": "T2",
 }
 
-# Top ablation configs to compare (from sweep results)
-TOP_ABLATION_CONFIGS = [
-    (0, "T1"),   # #1: AUC=0.894
-    (5, "M"),    # #2: AUC=0.820
-    (3, "contactSen"),  # #3: AUC=0.784
-    (4, "contactSen"),  # #4: AUC=0.772
-    (0, "powerConsu"),  # Representative non-top channel
-    (1, "T1"),   # T1 at deeper layer for comparison
-]
-
 
 # ============================================================================
 # Data loading (reuses train.py infrastructure)
@@ -127,6 +117,10 @@ def load_data(raw_cfg: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[s
     data_cfg = raw_cfg.get("data", {})
     _preprocess_fields = set(PreprocessConfig.__dataclass_fields__)
     base_cfg = {k: v for k, v in data_cfg.items() if k in _preprocess_fields}
+
+    # Load ALL numeric channels (remove explicit channel filter from YAML)
+    base_cfg.pop("channels", None)
+    base_cfg["nan_threshold"] = 0.3
 
     # Train labels
     train_cfg = PreprocessConfig(**base_cfg)
@@ -458,13 +452,6 @@ def save_csv_table(rows: list[dict], path: Path, fieldnames: list[str] | None = 
         for row in rows:
             writer.writerow({k: row.get(k, "") for k in fieldnames})
     logger.info("  Saved: %s (%d rows)", path, len(rows))
-
-
-def _nan_safe(v):
-    """JSON-safe NaN conversion."""
-    if isinstance(v, float) and (np.isnan(v) or np.isinf(v)):
-        return None
-    return v
 
 
 def save_json(data: dict, path: Path):
