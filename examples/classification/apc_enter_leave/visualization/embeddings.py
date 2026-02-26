@@ -20,7 +20,6 @@ from .style import (
     CLASS_COLORS,
     CLASS_NAMES,
     FIGSIZE_SINGLE,
-    FIGSIZE_WIDE,
     save_figure,
     setup_style,
 )

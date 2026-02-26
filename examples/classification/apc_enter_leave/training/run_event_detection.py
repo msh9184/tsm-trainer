@@ -71,12 +71,12 @@ from evaluation.metrics import (
 )
 from visualization.style import (
     CLASS_COLORS, CLASS_NAMES, ACCENT_COLOR,
-    FIGSIZE_SINGLE, FIGSIZE_WIDE,
+    FIGSIZE_SINGLE,
     setup_style, save_figure, configure_output,
 )
 from visualization.curves import (
-    plot_roc_curve, plot_det_curve, plot_confusion_matrix,
-    plot_cv_comparison_bar, plot_all_curves,
+    plot_confusion_matrix,
+    plot_cv_comparison_bar,
 )
 from visualization.embeddings import (
     reduce_dimensions, plot_embeddings, plot_embeddings_multi_method,
@@ -216,9 +216,22 @@ def run_loocv(
     from sklearn.preprocessing import StandardScaler
 
     n = len(y)
+    n_classes = len(np.unique(y))
+    is_binary = n_classes <= 2
+
+    # Check predict_proba availability once (same classifier type every fold)
+    test_clf = clf_factory()
+    has_prob = hasattr(test_clf, "predict_proba")
+    del test_clf
+
     y_pred_all = np.zeros(n, dtype=np.int64)
-    y_prob_all = np.zeros(n, dtype=np.float64)
-    has_prob = True
+    if has_prob:
+        if is_binary:
+            y_prob_all = np.zeros(n, dtype=np.float64)
+        else:
+            y_prob_all = np.zeros((n, n_classes), dtype=np.float64)
+    else:
+        y_prob_all = None
 
     for i in range(n):
         train_mask = np.ones(n, dtype=bool)
@@ -236,19 +249,15 @@ def run_loocv(
 
         y_pred_all[i] = clf.predict(Z_test_s)[0]
 
-        if hasattr(clf, "predict_proba"):
+        if has_prob:
             probs = clf.predict_proba(Z_test_s)[0]
-            # For binary: probability of class 1
-            if len(probs) == 2:
-                y_prob_all[i] = probs[1]
+            if is_binary:
+                y_prob_all[i] = probs[1] if len(probs) == 2 else probs[0]
             else:
-                y_prob_all[i] = probs[y_pred_all[i]]
-        else:
-            has_prob = False
+                y_prob_all[i] = probs
 
-    prob_arr = y_prob_all if has_prob else None
     return aggregate_cv_predictions(
-        y, y_pred_all, prob_arr,
+        y, y_pred_all, y_prob_all,
         cv_method="LOOCV", n_folds=n, class_names=class_names,
     )
 
@@ -272,12 +281,18 @@ def run_stratified_kfold(
 
     rskf = RepeatedStratifiedKFold(n_splits=k, n_repeats=n_repeats, random_state=seed)
     n = len(y)
+    n_classes = len(np.unique(y))
+    is_binary = n_classes <= 2
+
+    # Check predict_proba availability once
+    test_clf = clf_factory()
+    has_prob = hasattr(test_clf, "predict_proba")
+    del test_clf
 
     sample_indices_all = []
     y_true_all = []
     y_pred_all = []
     y_prob_all = []
-    has_prob = True
     n_folds = 0
 
     for train_idx, test_idx in rskf.split(Z, y):
@@ -295,27 +310,30 @@ def run_stratified_kfold(
         preds = clf.predict(Z_test_s)
 
         probs = None
-        if hasattr(clf, "predict_proba"):
+        if has_prob:
             probs = clf.predict_proba(Z_test_s)
-        else:
-            has_prob = False
 
         for j, idx in enumerate(test_idx):
             sample_indices_all.append(idx)
             y_true_all.append(y_test[j])
             y_pred_all.append(preds[j])
             if probs is not None:
-                if probs.shape[1] == 2:
-                    y_prob_all.append(probs[j, 1])
+                if is_binary:
+                    y_prob_all.append(probs[j, 1] if probs.shape[1] == 2 else probs[j, 0])
                 else:
-                    y_prob_all.append(probs[j])
-            else:
-                y_prob_all.append(0.0)
+                    y_prob_all.append(probs[j])  # full (n_classes,) vector
 
     sample_indices_all = np.array(sample_indices_all)
     y_true_all = np.array(y_true_all, dtype=np.int64)
     y_pred_all = np.array(y_pred_all, dtype=np.int64)
-    prob_arr = np.array(y_prob_all) if has_prob else None
+
+    if has_prob and y_prob_all:
+        if is_binary:
+            prob_arr = np.array(y_prob_all, dtype=np.float64)
+        else:
+            prob_arr = np.vstack(y_prob_all)  # (n_predictions, n_classes)
+    else:
+        prob_arr = None
 
     cv_name = f"StratifiedKFold{k}x{n_repeats}"
     return aggregate_repeated_cv_predictions(
@@ -340,11 +358,17 @@ def run_lodo(
 
     unique_days = sorted(np.unique(day_groups).tolist())
     n_folds = len(unique_days)
+    n_classes = len(np.unique(y))
+    is_binary = n_classes <= 2
+
+    # Check predict_proba availability once
+    test_clf = clf_factory()
+    has_prob = hasattr(test_clf, "predict_proba")
+    del test_clf
 
     y_true_all = []
     y_pred_all = []
     y_prob_all = []
-    has_prob = True
     skipped = 0
 
     for day in unique_days:
@@ -378,23 +402,27 @@ def run_lodo(
         y_true_all.extend(y_test.tolist())
         y_pred_all.extend(preds.tolist())
 
-        if hasattr(clf, "predict_proba"):
+        if has_prob:
             probs = clf.predict_proba(Z_test_s)
             for p in probs:
-                if len(p) == 2:
-                    y_prob_all.append(p[1])
+                if is_binary:
+                    y_prob_all.append(p[1] if len(p) == 2 else p[0])
                 else:
-                    y_prob_all.append(p)
-        else:
-            has_prob = False
-            y_prob_all.extend([0.0] * len(preds))
+                    y_prob_all.append(p)  # full (n_classes,) vector
 
     if skipped > 0:
         logger.warning("LODO: skipped %d/%d day folds due to single-class training sets", skipped, n_folds)
 
     y_true_all = np.array(y_true_all, dtype=np.int64)
     y_pred_all = np.array(y_pred_all, dtype=np.int64)
-    prob_arr = np.array(y_prob_all) if has_prob else None
+
+    if has_prob and y_prob_all:
+        if is_binary:
+            prob_arr = np.array(y_prob_all, dtype=np.float64)
+        else:
+            prob_arr = np.vstack(y_prob_all)
+    else:
+        prob_arr = None
 
     return aggregate_cv_predictions(
         y_true_all, y_pred_all, prob_arr,
@@ -511,7 +539,6 @@ def save_results_txt(
         line = "  ".join(f"{str(r.get(f, '')):<{widths[f]}}" for f in fieldnames)
         lines.append(line)
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("\n".join(lines) + "\n")
     logger.info("Saved: %s", output_path)
 
@@ -582,12 +609,12 @@ def run_experiment(
         logger.info("Layer %d: Loading MantisV2 and extracting embeddings", layer)
         logger.info("=" * 60)
 
-        _, model = load_mantis_model(pretrained_name, layer, output_token, device)
+        network, model = load_mantis_model(pretrained_name, layer, output_token, device)
         Z = extract_all_embeddings(model, dataset)
         all_embeddings[layer] = Z
 
-        # Free GPU memory
-        del model
+        # Free GPU memory (both trainer and network hold GPU tensors)
+        del model, network
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
@@ -596,6 +623,7 @@ def run_experiment(
     best_result = {"auc": -1}
     cv_method_results = defaultdict(lambda: defaultdict(dict))  # {cv_method: {clf: metric}}
     layer_auc = {}  # {layer: {best: best_auc}}
+    stored_metrics = {}  # {(layer, clf_name, cv_method): metrics} for reuse
 
     n_events = len(event_labels)
 
@@ -630,6 +658,7 @@ def run_experiment(
                     continue
 
                 elapsed = time.time() - t0
+                stored_metrics[(layer, clf_name, cv_method)] = metrics
 
                 logger.info(
                     "  Acc=%.4f  F1_macro=%.4f  AUC=%.4f  EER=%.4f  (%.1fs)",
@@ -746,16 +775,6 @@ def run_experiment(
         except Exception:
             logger.warning("Failed to plot confusion matrix", exc_info=True)
 
-        # ROC curve from best (binary only)
-        if best_metrics.roc_fpr is not None:
-            try:
-                fig, _, _ = plot_roc_curve(
-                    best_metrics.roc_fpr,  # This won't work directly...
-                    best_metrics.roc_tpr,
-                )
-            except Exception:
-                pass  # ROC from raw metrics is handled via plot_all_curves
-
         # Embedding plots
         if not quick:
             try:
@@ -783,25 +802,19 @@ def run_experiment(
     # ----- ROC overlay for best layer across classifiers -----
     if best_result.get("layer") is not None:
         best_layer = best_result["layer"]
-        Z = all_embeddings[best_layer]
         primary_cv = cv_methods[0] if cv_methods else "loocv"
 
-        # Re-run LOOCV for each classifier to get ROC data
+        # Look up stored metrics instead of re-running CV
         overlay_results = {}
         for clf_name in classifier_names:
-            clf_factory = lambda name=clf_name, s=seed: build_classifier(name, s)
-            if primary_cv == "loocv":
-                m = run_loocv(Z, event_labels, clf_factory, class_names)
-            else:
-                m = run_stratified_kfold(
-                    Z, event_labels, clf_factory,
-                    k=strat_k, n_repeats=strat_repeats, seed=seed,
-                    class_names=class_names,
-                )
-            overlay_results[clf_name] = {"metrics": m}
+            key = (best_layer, clf_name, primary_cv)
+            m = stored_metrics.get(key)
+            if m is not None:
+                overlay_results[clf_name] = {"metrics": m}
 
         try:
-            plot_roc_overlay(overlay_results, plots_dir / "roc_overlay")
+            if overlay_results:
+                plot_roc_overlay(overlay_results, plots_dir / "roc_overlay")
         except Exception:
             logger.warning("Failed to plot ROC overlay", exc_info=True)
 

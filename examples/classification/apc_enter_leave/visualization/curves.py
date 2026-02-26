@@ -18,7 +18,6 @@ from .style import (
     CLASS_COLORS,
     CLASS_NAMES,
     FIGSIZE_SINGLE,
-    FIGSIZE_WIDE,
     FONT_SIZE_ANNOTATION,
     save_figure,
     setup_style,
@@ -310,7 +309,7 @@ def plot_all_curves(
         return
 
     # ROC curve (binary only)
-    n_classes = len(np.unique(y_true))
+    n_classes = len(np.unique(np.concatenate([y_true, y_pred])))
     if n_classes <= 2:
         try:
             fig, _, _ = plot_roc_curve(

@@ -230,10 +230,14 @@ def load_events(
     timestamps = df["time"].values.astype("datetime64[ns]")
     labels = df["label"].values.astype(np.int64)
 
+    if len(labels) == 0:
+        raise ValueError(f"No valid events after filtering in {path}")
+
     # Log class distribution
     for i, name in enumerate(class_names):
         count = (labels == i).sum()
-        logger.info("  %s (label=%d): %d events (%.1f%%)", name, i, count, 100.0 * count / len(labels))
+        pct = 100.0 * count / len(labels)
+        logger.info("  %s (label=%d): %d events (%.1f%%)", name, i, count, pct)
 
     # Log same-timestamp collisions
     ts_series = pd.Series(labels, index=pd.DatetimeIndex(timestamps))
@@ -246,7 +250,7 @@ def load_events(
             len(unique_dup), len(dup_times),
         )
         for t in unique_dup:
-            collision_labels = ts_series.loc[t]
+            collision_labels = ts_series.loc[[t]]  # always returns Series
             label_strs = [class_names[l] for l in collision_labels.values]
             logger.warning("  %s: %s", t, label_strs)
 

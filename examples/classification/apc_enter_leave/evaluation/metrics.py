@@ -183,7 +183,7 @@ def compute_event_metrics(
     if class_names is None:
         class_names = [str(c) for c in unique_classes]
 
-    labels = list(range(n_classes))
+    labels = unique_classes
 
     acc = accuracy_score(y_true, y_pred)
     f1_mac = f1_score(y_true, y_pred, average="macro", labels=labels, zero_division=0)
@@ -261,8 +261,8 @@ def aggregate_cv_predictions(
     For LOOCV: each fold produces 1 prediction. Collect all N predictions
     into one array and compute metrics once (NOT per-fold averages).
 
-    For K-fold with repeats: if a sample appears in multiple folds,
-    average its predicted probabilities across appearances.
+    For K-fold with repeats: use ``aggregate_repeated_cv_predictions``
+    instead, which averages per-sample probabilities across appearances.
 
     Parameters
     ----------
@@ -339,8 +339,7 @@ def aggregate_repeated_cv_predictions(
         y_pred_final = np.argmax(avg_probs[valid], axis=1).astype(np.int64)
 
         # For binary, extract prob of class 1
-        n_classes_actual = len(np.unique(y_true_final))
-        if n_classes_actual <= 2:
+        if n_classes == 2:
             y_prob_final = avg_probs[valid, 1]
         else:
             y_prob_final = avg_probs[valid]
