@@ -47,7 +47,6 @@ import csv
 import json
 import logging
 import time
-from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -157,9 +156,12 @@ def load_all_data(raw_cfg: dict, include_none: bool = True):
         sensor_csv=data_cfg.get("sensor_csv", ""),
         events_csv=data_cfg.get("events_csv", ""),
         column_names_csv=data_cfg.get("column_names_csv"),
+        column_names=data_cfg.get("column_names"),
         channels=data_cfg.get("channels"),
+        exclude_channels=data_cfg.get("exclude_channels", []),
         nan_threshold=data_cfg.get("nan_threshold", 0.3),
         include_none=include_none,
+        add_time_features=data_cfg.get("add_time_features", False),
     )
     return load_sensor_and_events(config)
 
@@ -364,7 +366,7 @@ def format_summary_table_baseline(
     baseline_order = ["M_P_T", "M_P", "M_T", "P_T", "M", "P", "T"]
 
     lines = []
-    lines.append(f"{'motionSensor':>14}\t{'powerSensor':>14}\t{'temperature(2)':>16}\t{'Accuracy(%)':>12}")
+    lines.append(f"{'motionSensor':>14}\t{'powerSensor':>14}\t{'temperatureMeasurement(2)':>26}\t{'Accuracy(%)':>12}")
 
     for combo_key in baseline_order:
         r = best_per_combo.get(combo_key)
@@ -865,7 +867,7 @@ def run_phase1_sweep(
                 "best_classifier": r["classifier"],
                 "accuracy": round(r["accuracy"], 4),
                 "f1_macro": round(r["f1_macro"], 4),
-                "auc_macro": round(r["auc_macro"], 4) if r["auc_macro"] else None,
+                "auc_macro": round(r["auc_macro"], 4) if r["auc_macro"] is not None else None,
             })
     save_csv(best_combo_rows, tables_dir / "best_per_combo.csv")
 
@@ -1044,12 +1046,12 @@ def run_phase1_sweep(
             "accuracy": round(sorted_results[0]["accuracy"], 4),
             "f1_macro": round(sorted_results[0]["f1_macro"], 4),
             "auc_macro": (round(sorted_results[0]["auc_macro"], 4)
-                          if sorted_results[0]["auc_macro"] else None),
+                          if sorted_results[0]["auc_macro"] is not None else None),
         } if sorted_results else {},
         "all_results": [
             {k: (round(v, 4) if isinstance(v, float) else v)
              for k, v in r.items()
-             if k in csv_fields}
+             if k in csv_fields or k in ("combo_display", "is_baseline")}
             for r in all_results
         ],
     }
