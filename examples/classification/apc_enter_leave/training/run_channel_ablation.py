@@ -261,7 +261,9 @@ def build_combo_dataset(
     # No interpolation at native MantisV2 length (512)
     tgt = target_seq_len if seq_len != 512 else None
 
-    ds_config = EventDatasetConfig(seq_len=seq_len, target_seq_len=tgt)
+    ds_config = EventDatasetConfig(
+        context_mode="backward", seq_len=seq_len, target_seq_len=tgt,
+    )
     return EventDataset(
         combo_array, sensor_timestamps, event_timestamps, event_labels, ds_config,
     )
