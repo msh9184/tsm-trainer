@@ -1202,7 +1202,7 @@ def run_group3_visualization(raw_cfg, include_none, device, seed, output_dir):
     axes[1].set_yticks([])
 
     fig.suptitle("RF Classification Confidence & Uncertainty", fontsize=13, fontweight="bold")
-    fig.tight_layout()
+    fig.subplots_adjust(left=0.05, right=0.95, top=0.88, bottom=0.05, wspace=0.3)
     save_figure(fig, plots_dir / "confidence_analysis")
     plt.close(fig)
 
