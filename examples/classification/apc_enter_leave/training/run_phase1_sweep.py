@@ -7,7 +7,7 @@ matrix) for direct comparison.
 
 Sweep dimensions:
   - 6 transformer layers (L0-L5)
-  - 15 sensor combinations (7 baseline-equivalent + 8 extended)
+  - 21 sensor combinations (7 baseline-equivalent + 14 extended with T1/T2 independent)
   - 3 classifiers (RandomForest, SVM, NearestCentroid)
   - LOOCV evaluation (109 events: 35 Enter + 38 Leave + 36 None)
 
@@ -121,6 +121,19 @@ CHANNEL_COMBOS: list[tuple[str, str, list[str], bool]] = [
      ["T1"], False),
     ("T2", "temperatureMeasurement_ccea",
      ["T2"], False),
+    # --- Extended: T1/T2 independent cross-combinations ---
+    ("M_T1", "motionSensor, temperatureMeasurement_d620",
+     ["M", "T1"], False),
+    ("M_T2", "motionSensor, temperatureMeasurement_ccea",
+     ["M", "T2"], False),
+    ("P_T1", "powerSensor, temperatureMeasurement_d620",
+     ["P", "T1"], False),
+    ("P_T2", "powerSensor, temperatureMeasurement_ccea",
+     ["P", "T2"], False),
+    ("M_P_T1", "motionSensor, powerSensor, temperatureMeasurement_d620",
+     ["M", "P", "T1"], False),
+    ("M_P_T2", "motionSensor, powerSensor, temperatureMeasurement_ccea",
+     ["M", "P", "T2"], False),
     # --- Extended: key combinations with C, E ---
     ("M_C", "motionSensor, contactSensor",
      ["M", "C"], False),
@@ -916,7 +929,7 @@ def run_phase1_sweep(
         f.write("Phase 1 Zero-Shot Sweep -- Classification Reports\n")
         f.write("=" * 70 + "\n")
         f.write(f"Events: {n_events} ({', '.join(f'{n}={int((event_labels == i).sum())}' for i, n in enumerate(class_names))})\n")
-        f.write(f"Seq_len: {ds_config.seq_len} min ({ds_config.seq_len / 60:.1f}h)\n")
+        f.write(f"Context: {ds_config.describe()}\n")
         f.write(f"Sorted by accuracy (descending)\n")
         f.write("=" * 70 + "\n\n")
         for rpt in sorted_reports:
@@ -1034,7 +1047,10 @@ def run_phase1_sweep(
             for i, name in enumerate(class_names)
         },
         "channels_available": channel_names,
-        "seq_len": ds_config.seq_len,
+        "context_mode": ds_config.context_mode,
+        "context_window": ds_config.describe(),
+        "effective_seq_len": ds_config.effective_seq_len,
+        "target_seq_len": ds_config.target_seq_len,
         "layers": layers,
         "combos_tested": len(combos),
         "classifiers": classifier_names,
@@ -1073,7 +1089,7 @@ def run_phase1_sweep(
         for i, name in enumerate(class_names)
     )
     print(f"\nEvents: {n_events} ({class_dist})")
-    print(f"Seq_len: {ds_config.seq_len} min ({ds_config.seq_len / 60:.1f}h)")
+    print(f"Context: {ds_config.describe()}")
     print(f"Layers: {layers}")
     print(f"Combos: {len(combos)} | Classifiers: {classifier_names}")
     print(f"Total experiments: {len(all_results)} | Sweep time: {sweep_time:.1f}s")
