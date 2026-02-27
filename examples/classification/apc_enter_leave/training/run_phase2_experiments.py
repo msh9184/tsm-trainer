@@ -169,8 +169,10 @@ def run_experiment_pca(
         device=device,
     )
 
-    # PCA sweep dimensions
-    pca_dims = [32, 64, 128, 256, 512]
+    # PCA sweep dimensions — cap at min(n_samples, n_features) - 1
+    max_components = min(n_events, Z.shape[1]) - 1  # PCA requires n_components < min(N, D)
+    pca_dims = [d for d in [32, 64, 128, 256, 512] if d <= max_components]
+    logger.info("PCA dims (max_components=%d): %s", max_components, pca_dims)
 
     results_rf = []
     results_neural = []
@@ -397,7 +399,10 @@ def run_experiment_ensemble(
 
     # --- PCA + ensemble variant ---
     logger.info("Testing PCA + ensemble variants...")
-    for pca_dim in [64, 128]:
+    max_components = n_events - 1  # PCA requires n_components < n_samples
+    pca_ensemble_dims = [d for d in [64, 128] if d <= max_components]
+    logger.info("PCA ensemble dims (max_components=%d): %s", max_components, pca_ensemble_dims)
+    for pca_dim in pca_ensemble_dims:
         pca_probs = {}
         for ctx_name, Z_ctx in embeddings.items():
             scaler = StandardScaler()
@@ -440,8 +445,11 @@ def run_experiment_ensemble(
     results.append(row_concat)
     logger.info("  Concat RF: Acc=%.4f  (%.1fs)", metrics_concat.accuracy, elapsed)
 
-    # PCA on concatenated
-    for pca_dim in [128, 256]:
+    # PCA on concatenated — cap at min(n_samples, n_features) - 1
+    max_components_concat = min(n_events, Z_concat.shape[1]) - 1
+    pca_concat_dims = [d for d in [64, 128, 256] if d <= max_components_concat]
+    logger.info("PCA concat dims (max_components=%d): %s", max_components_concat, pca_concat_dims)
+    for pca_dim in pca_concat_dims:
         scaler = StandardScaler()
         Z_concat_s = scaler.fit_transform(Z_concat)
         pca = PCA(n_components=pca_dim, random_state=seed)
