@@ -91,7 +91,7 @@ from visualization.style import (
     configure_output,
 )
 from visualization.curves import plot_confusion_matrix
-from visualization.embeddings import reduce_dimensions, reduce_dimensions_joint
+from visualization.embeddings import reduce_dimensions
 
 # Phase 2 modules
 from training.heads import build_head
@@ -1469,8 +1469,10 @@ def plot_embedding_analysis(
     # --- Plot 5: Learned features (MLP-transformed vs raw) ---
     if learned_features is not None:
         try:
-            raw_2d, learned_2d = reduce_dimensions_joint(
-                Z, learned_features, method="tsne", random_state=42,
+            # Dimensions differ (e.g. 1024 vs 64) so reduce independently
+            raw_2d = reduce_dimensions(Z, method="tsne", random_state=42)
+            learned_2d = reduce_dimensions(
+                learned_features, method="tsne", random_state=42,
             )
             fig, axes = plt.subplots(1, 2, figsize=(10, 4))
             for ax, emb_2d, title in [
