@@ -217,6 +217,16 @@ def extract_embeddings(model, dataset: EventDataset) -> np.ndarray:
     t0 = time.time()
     Z = model.transform(X)
     elapsed = time.time() - t0
+
+    # Defensive NaN check (MantisV2 single-patch normalization edge case)
+    nan_count = int(np.isnan(Z).sum())
+    if nan_count > 0:
+        logger.warning(
+            "  %d NaN values in embeddings (%.1f%% of %d), replacing with 0",
+            nan_count, 100.0 * nan_count / Z.size, Z.size,
+        )
+        Z = np.nan_to_num(Z, nan=0.0)
+
     logger.info("  Embeddings: %s -> %s (%.1fs)", X.shape, Z.shape, elapsed)
     return Z
 

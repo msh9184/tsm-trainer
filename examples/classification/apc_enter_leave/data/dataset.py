@@ -17,9 +17,14 @@ Supports two context modes:
 
 MantisV2 constraints:
   - The input length must be a multiple of 32 (patch_size)
-  - In backward mode: seq_len must be a multiple of 32
+  - MantisV2 computes per-patch normalization using std across patches;
+    with only 1 patch (32 timesteps), Bessel-corrected std has dof=0
+    producing NaN.  Therefore the final sequence length must be >= 64
+    (at least 2 patches).
+  - In backward mode: seq_len must be a multiple of 32; if seq_len < 64,
+    target_seq_len is auto-set to 64.
   - In bidirectional mode: effective window is auto-interpolated to
-    the nearest multiple of 32 (via target_seq_len)
+    at least 64 timesteps (via target_seq_len)
 """
 
 from __future__ import annotations
@@ -50,7 +55,7 @@ class EventDatasetConfig:
         Window covers past and future context around the event:
         [t - context_before, t + context_after]. Total window length =
         context_before + 1 + context_after timesteps.
-        Auto-interpolated to MantisV2-compatible length (multiple of 32).
+        Auto-interpolated to MantisV2-compatible length (>= 64, multiple of 32).
 
     Attributes:
         context_mode: "backward" or "bidirectional".
@@ -100,22 +105,33 @@ class EventDatasetConfig:
                 f"got {self.context_mode!r}"
             )
 
+        # MantisV2 patch_size=32.  Internal per-patch normalization computes
+        # std across patches; with only 1 patch, Bessel-corrected std has
+        # dof=0 → NaN.  Minimum final length must be 64 (2 patches).
+        _min_mantis_len = 64  # 2 × patch_size
+
         if self.context_mode == "backward":
             if self.seq_len % 32 != 0:
                 raise ValueError(
                     f"seq_len must be a multiple of 32 for MantisV2, "
                     f"got {self.seq_len}"
                 )
+            # Auto-interpolate short backward windows to minimum MantisV2 length
+            if self.target_seq_len is None and self.seq_len < _min_mantis_len:
+                self.target_seq_len = _min_mantis_len
         else:  # bidirectional
             if self.context_before < 0 or self.context_after < 0:
                 raise ValueError(
                     f"context_before and context_after must be >= 0, "
                     f"got before={self.context_before}, after={self.context_after}"
                 )
-            # Auto-compute target_seq_len if effective length isn't MantisV2-compatible
+            # Auto-compute target_seq_len: ensure >= 2 patches and multiple of 32
             eff = self.effective_seq_len
-            if self.target_seq_len is None and eff % 32 != 0:
-                self.target_seq_len = ((eff + 31) // 32) * 32
+            if self.target_seq_len is None:
+                if eff < _min_mantis_len:
+                    self.target_seq_len = _min_mantis_len
+                elif eff % 32 != 0:
+                    self.target_seq_len = ((eff + 31) // 32) * 32
 
         if self.target_seq_len is not None and self.target_seq_len % 32 != 0:
             raise ValueError(
