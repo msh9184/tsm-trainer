@@ -366,6 +366,7 @@ def frofa_augmentation(
     Z: torch.Tensor,
     strength: float = 0.1,
     generator: torch.Generator | None = None,
+    Z_train_std: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """FroFA: channel-wise affine perturbation on frozen embeddings.
 
@@ -382,6 +383,10 @@ def frofa_augmentation(
     strength : float
         Perturbation strength. Typical: 0.05-0.2.
     generator : torch.Generator, optional
+    Z_train_std : Tensor, optional, shape (embed_dim,) or (1, embed_dim)
+        Per-dimension std from the training fold. CRITICAL for TTA where
+        batch_size=1 (LOOCV test set): Z.std(dim=0) with Bessel's
+        correction yields NaN on a single sample.
 
     Returns
     -------
@@ -394,7 +399,13 @@ def frofa_augmentation(
 
     # Per-dimension affine: brightness (alpha) and contrast (beta)
     alpha = 1.0 + (2 * torch.rand(1, d, dtype=Z.dtype, device=Z.device, generator=generator) - 1) * strength
-    std_per_dim = Z.std(dim=0, keepdim=True).clamp(min=1e-8)
+
+    # Use training std when provided (required for TTA with batch_size=1)
+    if Z_train_std is not None:
+        std_per_dim = Z_train_std.reshape(1, -1).to(Z.device).clamp(min=1e-8)
+    else:
+        std_per_dim = Z.std(dim=0, keepdim=True).clamp(min=1e-8)
+
     beta = torch.randn(1, d, dtype=Z.dtype, device=Z.device, generator=generator) * strength * std_per_dim
 
     return alpha * Z + beta

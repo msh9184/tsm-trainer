@@ -498,7 +498,10 @@ def run_tta_loocv(
                 gen.manual_seed(seed + k + 1)
 
                 if tta_strategy == "frofa":
-                    Z_aug = frofa_augmentation(Z_test_t, strength=tta_strength, generator=gen)
+                    Z_aug = frofa_augmentation(
+                        Z_test_t, strength=tta_strength, generator=gen,
+                        Z_train_std=Z_train_std.to(device),
+                    )
                 elif tta_strategy == "adaptive_noise":
                     Z_aug = adaptive_noise(
                         Z_test_t, Z_train_std.to(device),
@@ -2115,6 +2118,18 @@ def main():
         "--seed", type=int, default=None,
         help="Random seed",
     )
+    parser.add_argument(
+        "--context-before", type=int, default=None,
+        help="Override context_before (use Stage 1 best, e.g. 2 for 2+1+2)",
+    )
+    parser.add_argument(
+        "--context-after", type=int, default=None,
+        help="Override context_after (use Stage 1 best, e.g. 2 for 2+1+2)",
+    )
+    parser.add_argument(
+        "--context-mode", default=None,
+        help="Override context_mode (bidirectional/backward)",
+    )
 
     args = parser.parse_args()
 
@@ -2126,6 +2141,16 @@ def main():
 
     raw_cfg = load_config(args.config)
 
+    # Apply context overrides to config (critical: use Stage 1 best for stages 2-5)
+    if args.context_before is not None or args.context_after is not None or args.context_mode is not None:
+        ds = raw_cfg.setdefault("dataset", {})
+        if args.context_before is not None:
+            ds["context_before"] = args.context_before
+        if args.context_after is not None:
+            ds["context_after"] = args.context_after
+        if args.context_mode is not None:
+            ds["context_mode"] = args.context_mode
+
     seed = args.seed if args.seed is not None else raw_cfg.get("seed", 42)
     device = args.device if args.device is not None else raw_cfg.get("model", {}).get("device", "cuda")
     include_none = args.include_none or raw_cfg.get("data", {}).get("include_none", False)
@@ -2135,11 +2160,15 @@ def main():
         logger.warning("CUDA not available, falling back to CPU")
         device = "cpu"
 
+    ctx_before = raw_cfg.get("dataset", {}).get("context_before", 4)
+    ctx_after = raw_cfg.get("dataset", {}).get("context_after", 4)
+
     logger.info("=" * 60)
     logger.info("Phase 2 v2: Focused Augmentation + Redesigned Stage Sweep")
     logger.info("=" * 60)
     logger.info("  Stages: %s", stages)
     logger.info("  Layer: %s", args.layer or "3 (default)")
+    logger.info("  Context: %d+1+%d", ctx_before, ctx_after)
     logger.info("  Device: %s", device)
     logger.info("  Seed: %d", seed)
     logger.info("  Include NONE: %s", include_none)
