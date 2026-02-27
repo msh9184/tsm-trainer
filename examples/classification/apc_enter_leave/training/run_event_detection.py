@@ -589,9 +589,16 @@ def save_results_csv(
         return
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if fieldnames is None:
-        fieldnames = list(results[0].keys())
+        # Collect union of all keys (preserving order) to handle extra fields
+        seen = set()
+        fieldnames = []
+        for r in results:
+            for k in r.keys():
+                if k not in seen:
+                    seen.add(k)
+                    fieldnames.append(k)
     with open(output_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(results)
     logger.info("Saved: %s (%d rows)", output_path, len(results))
@@ -607,7 +614,14 @@ def save_results_txt(
         return
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if fieldnames is None:
-        fieldnames = list(results[0].keys())
+        # Collect union of all keys (preserving order) to handle extra fields
+        seen = set()
+        fieldnames = []
+        for r in results:
+            for k in r.keys():
+                if k not in seen:
+                    seen.add(k)
+                    fieldnames.append(k)
 
     # Calculate column widths
     widths = {f: max(len(f), max(len(str(r.get(f, ""))) for r in results)) for f in fieldnames}
