@@ -40,18 +40,15 @@ from __future__ import annotations
 
 import argparse
 import copy
-import csv
 import json
 import logging
 import time
-from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import torch
 import torch.nn as nn
-import yaml
 
 import sys
 import os
@@ -75,15 +72,13 @@ from training.run_event_detection import (
     save_results_csv,
     save_results_txt,
 )
-from data.dataset import EventDatasetConfig, EventDataset, build_dataset_config
+from data.dataset import EventDataset, build_dataset_config
 from evaluation.metrics import (
     EventClassificationMetrics,
-    compute_event_metrics,
     aggregate_cv_predictions,
 )
 from visualization.style import (
     FIGSIZE_SINGLE,
-    FIGSIZE_WIDE,
     setup_style,
     save_figure,
     configure_output,
@@ -91,7 +86,7 @@ from visualization.style import (
 from visualization.curves import plot_confusion_matrix
 
 # Phase 2 modules
-from training.heads import build_head, HEAD_REGISTRY
+from training.heads import build_head
 from training.augmentation import apply_augmentation
 
 logger = logging.getLogger(__name__)
