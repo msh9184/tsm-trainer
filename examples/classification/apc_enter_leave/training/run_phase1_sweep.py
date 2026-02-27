@@ -38,6 +38,12 @@ Usage:
 
     # CPU mode
     python training/run_phase1_sweep.py --config ... --device cpu
+
+    # Backward-only context (8.5h, no future)
+    python training/run_phase1_sweep.py --config ... --backward-only
+
+    # Custom bidirectional context (e.g., past 8min + future 8min)
+    python training/run_phase1_sweep.py --config ... --context-before 8 --context-after 8
 """
 
 from __future__ import annotations
@@ -67,7 +73,7 @@ _PROJECT_DIR = _SCRIPT_DIR.parent
 sys.path.insert(0, str(_PROJECT_DIR))
 
 from data.preprocess import EventPreprocessConfig, load_sensor_and_events
-from data.dataset import EventDatasetConfig, EventDataset
+from data.dataset import EventDatasetConfig, EventDataset, build_dataset_config
 from visualization.style import setup_style, save_figure, configure_output
 
 logger = logging.getLogger(__name__)
@@ -692,12 +698,9 @@ def run_phase1_sweep(
     ch_idx = {name: i for i, name in enumerate(channel_names)}
     logger.info("Available channels (%d): %s", len(channel_names), channel_names)
 
-    # Dataset config
+    # Dataset config (smart mode detection: bidirectional vs backward)
     ds_cfg_raw = raw_cfg.get("dataset", {})
-    ds_config = EventDatasetConfig(
-        seq_len=ds_cfg_raw.get("seq_len", 512),
-        target_seq_len=ds_cfg_raw.get("target_seq_len"),
-    )
+    ds_config = build_dataset_config(ds_cfg_raw)
 
     # Model config
     model_cfg = raw_cfg.get("model", {})
@@ -716,7 +719,7 @@ def run_phase1_sweep(
     logger.info("Layers: %s", layers)
     logger.info("Combos: %d", len(combos))
     logger.info("Classifiers: %s", classifier_names)
-    logger.info("Seq_len: %d (%.1fh)", ds_config.seq_len, ds_config.seq_len / 60)
+    logger.info("Context: %s", ds_config.describe())
 
     # ---- Main sweep ----
     all_results = []
@@ -1149,6 +1152,22 @@ def main():
         "--top-k-tsne", type=int, default=5,
         help="Number of top configs for t-SNE (default: 5)",
     )
+    parser.add_argument(
+        "--context-mode", choices=["bidirectional", "backward"], default=None,
+        help="Context window mode (default: from config or bidirectional)",
+    )
+    parser.add_argument(
+        "--context-before", type=int, default=None,
+        help="Minutes before event (bidirectional mode, default: 4)",
+    )
+    parser.add_argument(
+        "--context-after", type=int, default=None,
+        help="Minutes after event (bidirectional mode, default: 4)",
+    )
+    parser.add_argument(
+        "--backward-only", action="store_true",
+        help="Use backward-only context (seq_len from config, default 512)",
+    )
 
     args = parser.parse_args()
 
@@ -1186,6 +1205,19 @@ def main():
                 return
         else:
             combos = CHANNEL_COMBOS
+
+    # Apply CLI overrides to dataset config
+    ds_overrides = {}
+    if args.backward_only:
+        ds_overrides["context_mode"] = "backward"
+    elif args.context_mode:
+        ds_overrides["context_mode"] = args.context_mode
+    if args.context_before is not None:
+        ds_overrides["context_before"] = args.context_before
+    if args.context_after is not None:
+        ds_overrides["context_after"] = args.context_after
+    if ds_overrides:
+        raw_cfg.setdefault("dataset", {}).update(ds_overrides)
 
     logger.info("=" * 70)
     logger.info("Phase 1 Zero-Shot Sweep")

@@ -31,6 +31,12 @@ Usage:
 
     # CPU-only
     python training/run_event_detection.py --config ... --device cpu
+
+    # Backward-only context (8.5h, no future)
+    python training/run_event_detection.py --config ... --backward-only
+
+    # Custom bidirectional context (e.g., past 8min + future 8min)
+    python training/run_event_detection.py --config ... --context-before 8 --context-after 8
 """
 
 from __future__ import annotations
@@ -61,7 +67,7 @@ _PROJECT_DIR = _SCRIPT_DIR.parent
 sys.path.insert(0, str(_PROJECT_DIR))
 
 from data.preprocess import EventPreprocessConfig, load_sensor_and_events
-from data.dataset import EventDatasetConfig, EventDataset
+from data.dataset import EventDatasetConfig, EventDataset, build_dataset_config
 from evaluation.metrics import (
     EventClassificationMetrics,
     aggregate_cv_predictions,
@@ -643,12 +649,9 @@ def run_experiment(
         load_data(raw_cfg, include_none=include_none)
     )
 
-    # ----- Build dataset -----
+    # ----- Build dataset (smart mode detection: bidirectional vs backward) -----
     ds_cfg_raw = raw_cfg.get("dataset", {})
-    ds_config = EventDatasetConfig(
-        seq_len=ds_cfg_raw.get("seq_len", 512),
-        target_seq_len=ds_cfg_raw.get("target_seq_len"),
-    )
+    ds_config = build_dataset_config(ds_cfg_raw)
     dataset = EventDataset(
         sensor_array, sensor_timestamps, event_timestamps, event_labels, ds_config,
     )
@@ -896,7 +899,10 @@ def run_experiment(
             "n_channels": len(channel_names),
             "channel_names": channel_names,
             "class_names": class_names,
-            "seq_len": ds_config.seq_len,
+            "context_mode": ds_config.context_mode,
+            "context_window": ds_config.describe(),
+            "effective_seq_len": ds_config.effective_seq_len,
+            "target_seq_len": ds_config.target_seq_len,
             "layers_tested": layers,
             "cv_methods": cv_methods,
             "classifiers": classifier_names,
@@ -922,7 +928,7 @@ def run_experiment(
         "",
         f"Events: {n_events} ({', '.join(f'{n}={int((event_labels == i).sum())}' for i, n in enumerate(class_names))})",
         f"Channels: {len(channel_names)} ({', '.join(channel_names)})",
-        f"Context window: {ds_config.seq_len} min ({ds_config.seq_len / 60:.1f}h)",
+        f"Context window: {ds_config.describe()}",
         f"Calendar days: {len(unique_days)}",
         "",
         "Best Configuration:",
@@ -995,6 +1001,22 @@ def main():
         "--seed", type=int, default=None,
         help="Random seed (default: from config)",
     )
+    parser.add_argument(
+        "--context-mode", choices=["bidirectional", "backward"], default=None,
+        help="Context window mode (default: from config or bidirectional)",
+    )
+    parser.add_argument(
+        "--context-before", type=int, default=None,
+        help="Minutes before event (bidirectional mode, default: 4)",
+    )
+    parser.add_argument(
+        "--context-after", type=int, default=None,
+        help="Minutes after event (bidirectional mode, default: 4)",
+    )
+    parser.add_argument(
+        "--backward-only", action="store_true",
+        help="Use backward-only context (seq_len from config, default 512)",
+    )
 
     args = parser.parse_args()
 
@@ -1006,6 +1028,19 @@ def main():
     )
 
     raw_cfg = load_config(args.config)
+
+    # Apply CLI overrides to dataset config
+    ds_overrides = {}
+    if args.backward_only:
+        ds_overrides["context_mode"] = "backward"
+    elif args.context_mode:
+        ds_overrides["context_mode"] = args.context_mode
+    if args.context_before is not None:
+        ds_overrides["context_before"] = args.context_before
+    if args.context_after is not None:
+        ds_overrides["context_after"] = args.context_after
+    if ds_overrides:
+        raw_cfg.setdefault("dataset", {}).update(ds_overrides)
 
     # Resolve parameters (CLI overrides config)
     seed = args.seed if args.seed is not None else raw_cfg.get("seed", 42)

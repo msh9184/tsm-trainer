@@ -22,8 +22,11 @@ data:
     - f2e891c6_energyMeter
 
 dataset:
-  seq_len: 512               # 512min = 8.5h (MantisV2 native, no interpolation)
-  target_seq_len: null        # No interpolation at native length
+  context_mode: bidirectional   # "bidirectional" or "backward"
+  context_before: 4             # 4 minutes before event
+  context_after: 4              # 4 minutes after event
+  # Effective: 4+1+4 = 9 timesteps -> auto-interpolated to 32 for MantisV2
+  # Use context_mode: backward + seq_len: 512 for 8.5h backward-only window
 
 cv:
   methods: [loocv, stratified_kfold, lodo]
