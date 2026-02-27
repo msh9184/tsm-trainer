@@ -176,6 +176,8 @@ def train_head(
 
     Z_train = Z_train.to(device)
     y_train = y_train.to(device)
+    if Z_train_std is not None:
+        Z_train_std = Z_train_std.to(device)
 
     optimizer = torch.optim.AdamW(
         head.parameters(), lr=config.lr, weight_decay=config.weight_decay,
