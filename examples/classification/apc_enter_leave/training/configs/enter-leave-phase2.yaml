@@ -1,0 +1,79 @@
+# Phase 2: MantisV2 Frozen Backbone + Neural Classification Head Fine-Tuning
+#
+# 5-stage sweep:
+#   Stage 1: Head architecture selection (17 configs)
+#   Stage 2: Augmentation & regularization (20 configs)
+#   Stage 3: Multi-layer fusion (6 configs)
+#   Stage 4: Sensor combination validation (4 configs)
+#   Stage 5: Ensemble & final (3 configs)
+#
+# Usage:
+#   cd examples/classification/apc_enter_leave
+#   python training/run_phase2_finetune.py --config training/configs/enter-leave-phase2.yaml
+#   python training/run_phase2_finetune.py --config ... --stages 1     # Stage 1 only
+#   python training/run_phase2_finetune.py --config ... --device cpu    # CPU-only
+
+seed: 42
+output_dir: results/phase2_finetune
+
+model:
+  pretrained_name: "paris-noah/MantisV2"
+  output_token: "combined"
+  device: "cuda"
+
+data:
+  sensor_csv: "/group-volume/workspace/haeri.kim/Time-Series/data/SmartThings/Samsung_QST_Data/enter_leave/merged_processed_data_with_motion_count_0209_0223_interval1.csv"
+  events_csv: "/group-volume/workspace/haeri.kim/Time-Series/data/SmartThings/Samsung_QST_Data/enter_leave/occupancy_events_0210_0219_processed_with_none.csv"
+  column_names_csv: "/group-volume/workspace/haeri.kim/Time-Series/data/SmartThings/Samsung_QST_Data/enter_leave/merged_data_with_motion_count_0209_0223.csv"
+  include_none: true
+  # Default channels: motionSensor + contactSensor (Phase 1 best)
+  channels:
+    - d620900d_motionSensor
+    - 408981c2_contactSensor
+
+dataset:
+  context_mode: bidirectional
+  context_before: 4
+  context_after: 4
+
+# Default training hyperparameters (overridden per stage)
+training:
+  epochs: 200
+  lr: 1.0e-3
+  weight_decay: 0.01
+  label_smoothing: 0.0
+  early_stopping_patience: 30
+
+# Default augmentation (overridden per stage)
+augmentation:
+  gaussian_noise_sigma: 0.0
+  mixup_alpha: 0.0
+  channel_drop_p: 0.0
+
+cv:
+  primary_method: loocv
+  stratified_k: 5
+  stratified_repeats: 10
+
+# Which stages to run (1-5)
+sweep:
+  stages: [1, 2, 3, 4, 5]
+
+# Sensor combinations for Stage 4
+sensor_combos:
+  M+C:
+    - d620900d_motionSensor
+    - 408981c2_contactSensor
+  M:
+    - d620900d_motionSensor
+  M+P+C:
+    - d620900d_motionSensor
+    - f2e891c6_powerMeter
+    - 408981c2_contactSensor
+  ALL:
+    - d620900d_motionSensor
+    - f2e891c6_powerMeter
+    - d620900d_temperatureMeasurement
+    - ccea734e_temperatureMeasurement
+    - 408981c2_contactSensor
+    - f2e891c6_energyMeter
