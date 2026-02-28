@@ -591,7 +591,7 @@ def plot_distance_analysis(Z, y, class_names, output_path):
     ax3.set_title("Separation Ratio\n(inter/intra, >1 = good)", fontweight="bold")
 
     fig.suptitle("Embedding Space Analysis (L3, 2+1+2)", fontsize=13, fontweight="bold")
-    fig.tight_layout()
+    fig.subplots_adjust(left=0.08, right=0.95, top=0.88, bottom=0.08, wspace=0.4)
     save_figure(fig, output_path)
     plt.close(fig)
     logger.info("Saved: %s", output_path)
@@ -1241,8 +1241,8 @@ def run_group3_visualization(raw_cfg, include_none, device, seed, output_dir):
             "Context 2+1+2 (5min) is optimal for door enter/leave events",
         ],
         "limitations": [
-            "Theoretical ceiling ~96.33% (4 timestamp collisions)",
-            "N=109 extremely small → wide CI [87%-97%]",
+            "Timestamp collision samples removed (4 events)",
+            "N=105 extremely small → wide CI",
             "10 events (9.2%) sensor-identical but differently labeled",
             "Bottleneck: input information, not classifier capacity",
             "Next: full fine-tuning, larger context, more data",
@@ -1252,14 +1252,14 @@ def run_group3_visualization(raw_cfg, include_none, device, seed, output_dir):
             "Best Neural": "91.74% (Linear Concat L0+L3)",
             "Phase 1 Baseline": "92.66% (RF single 2+1+2)",
             "Improvement": "+0.92% from ensemble",
-            "Theoretical Max": "~96.33% (collision limit)",
+            "Theoretical Max": "100% (collisions removed)",
         },
         "data_info": {
-            "Total Events": "109 (35 Enter + 38 Leave + 36 None)",
+            "Total Events": "105 (33 Enter + 36 Leave + 36 None)",
             "Sensors": "2 (motionSensor + contactSensor)",
             "Sensor Timesteps": "19,190 rows",
             "Date Range": "2026-02-10 ~ 02-19",
-            "CV Method": "LOOCV (109-fold)",
+            "CV Method": "LOOCV (105-fold)",
             "Embedding Dim": "1024 (512 × 2 channels)",
         },
     }

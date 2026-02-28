@@ -23,9 +23,9 @@ model:
   device: "cuda"
 
 data:
-  sensor_csv: "/group-volume/workspace/haeri.kim/Time-Series/data/SmartThings/Samsung_QST_Data/enter_leave/merged_processed_data_with_motion_count_0209_0223_interval1.csv"
-  events_csv: "/group-volume/workspace/haeri.kim/Time-Series/data/SmartThings/Samsung_QST_Data/enter_leave/occupancy_events_0210_0219_processed_with_none.csv"
-  column_names_csv: "/group-volume/workspace/haeri.kim/Time-Series/data/SmartThings/Samsung_QST_Data/enter_leave/merged_data_with_motion_count_0209_0223.csv"
+  sensor_csv: "/group-volume/ts-dataset/AIHub/enter_leave/merged_processed_data_with_motion_count_0209_0223_interval1.csv"
+  events_csv: "/group-volume/ts-dataset/AIHub/enter_leave/occupancy_events_0210_0219_processed_with_none_cleaned.csv"
+  column_names_csv: "/group-volume/ts-dataset/AIHub/enter_leave/merged_data_with_motion_count_0209_0223.csv"
   include_none: true
   # Default channels: motionSensor + contactSensor (Phase 1 best)
   channels:
