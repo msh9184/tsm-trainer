@@ -2,32 +2,36 @@
 """Phase 1 Comprehensive Sweep: MantisV2 Frozen Embeddings + sklearn Classifiers.
 
 Designed for 3 parallel GPU servers to find optimal configuration.
+Findings from initial round: context window is the dominant factor
+(AUC scales from 0.56 at 1min to 0.84 at 241min, no saturation).
+Layer choice is negligible (±0.01 AUC range at any given context).
 
 Three sweep groups (run independently on separate GPUs):
 
-  Group A — Context Window × Layer (84 experiments)
-    - 14 context settings × 6 layers
-    - Fixed: RF, M+C channels, combined token
-    - Goal: Find optimal temporal context and MantisV2 layer
+  Group A — Context Window Deep Exploration (~51 experiments)
+    - 21 symmetric bidirectional + 10 backward-only
+      + 16 asymmetric past-heavy + 4 asymmetric future-heavy
+    - Fixed: L2, RF, M+C channels, combined token
+    - Goal: Map full context window landscape, find saturation point
 
-  Group B — Channel Ablation (126 experiments)
-    - 21 channel combos × 6 layers
-    - Fixed: RF, 9min context (4+1+4), combined token
-    - Goal: Find optimal sensor channel combination
+  Group B — Channel Ablation × Context (~63 experiments)
+    - 21 channel combos × 3 context sizes (61min, 121min, 241min)
+    - Fixed: L2, RF, combined token
+    - Goal: Check if channel importance varies with context length
 
-  Group C — Classifier × Output Token × Interp Length (54 experiments)
-    - 3 classifiers × 3 tokens × 6 target_seq_len
-    - Fixed: best layer (default L3), M+C, 9min context
-    - Goal: Fine-tune representation and classifier choice
+  Group C — Classifier × Layer at Long Contexts (~54 experiments)
+    - 3 classifiers × 6 layers × 3 contexts (121min, 241min, 361min)
+    - Fixed: M+C channels, combined token
+    - Goal: Find best classifier and layer at long contexts
 
 Usage:
   cd examples/classification/apc_occupancy
 
-  # Run all groups sequentially (~8-12h total on A100)
+  # Run all groups sequentially
   python training/run_phase1_sweep.py \\
       --config training/configs/occupancy-phase1.yaml --device cuda
 
-  # Run single group (for parallel GPU servers, ~3-4h each)
+  # Run single group (for parallel GPU servers)
   python training/run_phase1_sweep.py \\
       --config training/configs/occupancy-phase1.yaml --group A --device cuda
   python training/run_phase1_sweep.py \\
@@ -72,22 +76,84 @@ logger = logging.getLogger(__name__)
 
 ALL_LAYERS = [0, 1, 2, 3, 4, 5]
 
-# 14 context window configurations (bidirectional + 1 backward comparison)
-CONTEXT_CONFIGS = [
-    {"name": "1min (0+1+0)", "context_before": 0, "context_after": 0, "context_mode": "bidirectional"},
-    {"name": "3min (1+1+1)", "context_before": 1, "context_after": 1, "context_mode": "bidirectional"},
-    {"name": "5min (2+1+2)", "context_before": 2, "context_after": 2, "context_mode": "bidirectional"},
-    {"name": "7min (3+1+3)", "context_before": 3, "context_after": 3, "context_mode": "bidirectional"},
-    {"name": "9min (4+1+4)", "context_before": 4, "context_after": 4, "context_mode": "bidirectional"},
-    {"name": "11min (5+1+5)", "context_before": 5, "context_after": 5, "context_mode": "bidirectional"},
-    {"name": "15min (7+1+7)", "context_before": 7, "context_after": 7, "context_mode": "bidirectional"},
-    {"name": "21min (10+1+10)", "context_before": 10, "context_after": 10, "context_mode": "bidirectional"},
-    {"name": "31min (15+1+15)", "context_before": 15, "context_after": 15, "context_mode": "bidirectional"},
-    {"name": "41min (20+1+20)", "context_before": 20, "context_after": 20, "context_mode": "bidirectional"},
-    {"name": "61min (30+1+30)", "context_before": 30, "context_after": 30, "context_mode": "bidirectional"},
-    {"name": "121min (60+1+60)", "context_before": 60, "context_after": 60, "context_mode": "bidirectional"},
-    {"name": "241min (120+1+120)", "context_before": 120, "context_after": 120, "context_mode": "bidirectional"},
-    {"name": "31min backward (30+1+0)", "context_before": 30, "context_after": 0, "context_mode": "bidirectional"},
+# ── Group A: Context Window Deep Exploration ────────────────────────
+# Subgroup A1: Symmetric Bidirectional (21 configs)
+# Key range: performance scales log-linearly from 1min to 241min+
+CONTEXT_SYMMETRIC = [
+    {"name": "1min (0+1+0)", "context_before": 0, "context_after": 0},
+    {"name": "3min (1+1+1)", "context_before": 1, "context_after": 1},
+    {"name": "5min (2+1+2)", "context_before": 2, "context_after": 2},
+    {"name": "9min (4+1+4)", "context_before": 4, "context_after": 4},
+    {"name": "15min (7+1+7)", "context_before": 7, "context_after": 7},
+    {"name": "21min (10+1+10)", "context_before": 10, "context_after": 10},
+    {"name": "31min (15+1+15)", "context_before": 15, "context_after": 15},
+    {"name": "41min (20+1+20)", "context_before": 20, "context_after": 20},
+    {"name": "61min (30+1+30)", "context_before": 30, "context_after": 30},
+    {"name": "91min (45+1+45)", "context_before": 45, "context_after": 45},
+    {"name": "121min (60+1+60)", "context_before": 60, "context_after": 60},
+    {"name": "151min (75+1+75)", "context_before": 75, "context_after": 75},
+    {"name": "181min (90+1+90)", "context_before": 90, "context_after": 90},
+    {"name": "241min (120+1+120)", "context_before": 120, "context_after": 120},
+    {"name": "301min (150+1+150)", "context_before": 150, "context_after": 150},
+    {"name": "361min (180+1+180)", "context_before": 180, "context_after": 180},
+    {"name": "481min (240+1+240)", "context_before": 240, "context_after": 240},
+    {"name": "601min (300+1+300)", "context_before": 300, "context_after": 300},
+    {"name": "721min (360+1+360)", "context_before": 360, "context_after": 360},
+    {"name": "961min (480+1+480)", "context_before": 480, "context_after": 480},
+    {"name": "1441min (720+1+720)", "context_before": 720, "context_after": 720},
+]
+
+# Subgroup A2: Backward-Only (10 configs) — no future information
+CONTEXT_BACKWARD = [
+    {"name": "bw 6min (5+1+0)", "context_before": 5, "context_after": 0},
+    {"name": "bw 16min (15+1+0)", "context_before": 15, "context_after": 0},
+    {"name": "bw 31min (30+1+0)", "context_before": 30, "context_after": 0},
+    {"name": "bw 61min (60+1+0)", "context_before": 60, "context_after": 0},
+    {"name": "bw 121min (120+1+0)", "context_before": 120, "context_after": 0},
+    {"name": "bw 241min (240+1+0)", "context_before": 240, "context_after": 0},
+    {"name": "bw 361min (360+1+0)", "context_before": 360, "context_after": 0},
+    {"name": "bw 481min (480+1+0)", "context_before": 480, "context_after": 0},
+    {"name": "bw 721min (720+1+0)", "context_before": 720, "context_after": 0},
+    {"name": "bw 1441min (1440+1+0)", "context_before": 1440, "context_after": 0},
+]
+
+# Subgroup A3: Asymmetric Past-Heavy (16 configs) — practical deployment
+CONTEXT_ASYM_PAST = [
+    {"name": "asym 30p+5f (30+1+5)", "context_before": 30, "context_after": 5},
+    {"name": "asym 60p+5f (60+1+5)", "context_before": 60, "context_after": 5},
+    {"name": "asym 60p+10f (60+1+10)", "context_before": 60, "context_after": 10},
+    {"name": "asym 60p+30f (60+1+30)", "context_before": 60, "context_after": 30},
+    {"name": "asym 120p+5f (120+1+5)", "context_before": 120, "context_after": 5},
+    {"name": "asym 120p+10f (120+1+10)", "context_before": 120, "context_after": 10},
+    {"name": "asym 120p+30f (120+1+30)", "context_before": 120, "context_after": 30},
+    {"name": "asym 120p+60f (120+1+60)", "context_before": 120, "context_after": 60},
+    {"name": "asym 240p+10f (240+1+10)", "context_before": 240, "context_after": 10},
+    {"name": "asym 240p+30f (240+1+30)", "context_before": 240, "context_after": 30},
+    {"name": "asym 240p+60f (240+1+60)", "context_before": 240, "context_after": 60},
+    {"name": "asym 240p+120f (240+1+120)", "context_before": 240, "context_after": 120},
+    {"name": "asym 360p+30f (360+1+30)", "context_before": 360, "context_after": 30},
+    {"name": "asym 360p+60f (360+1+60)", "context_before": 360, "context_after": 60},
+    {"name": "asym 480p+60f (480+1+60)", "context_before": 480, "context_after": 60},
+    {"name": "asym 720p+60f (720+1+60)", "context_before": 720, "context_after": 60},
+]
+
+# Subgroup A4: Asymmetric Future-Heavy (4 configs) — comparison baseline
+CONTEXT_ASYM_FUTURE = [
+    {"name": "asym 5p+30f (5+1+30)", "context_before": 5, "context_after": 30},
+    {"name": "asym 10p+60f (10+1+60)", "context_before": 10, "context_after": 60},
+    {"name": "asym 30p+120f (30+1+120)", "context_before": 30, "context_after": 120},
+    {"name": "asym 60p+240f (60+1+240)", "context_before": 60, "context_after": 240},
+]
+
+# All context configs for Group A
+ALL_CONTEXT_CONFIGS = CONTEXT_SYMMETRIC + CONTEXT_BACKWARD + CONTEXT_ASYM_PAST + CONTEXT_ASYM_FUTURE
+
+# ── Group B: Channel Ablation at multiple contexts ──────────────────
+# Test at 3 representative context sizes to check for interaction effects
+GROUP_B_CONTEXTS = [
+    {"name": "61min", "context_before": 30, "context_after": 30},
+    {"name": "121min", "context_before": 60, "context_after": 60},
+    {"name": "241min", "context_before": 120, "context_after": 120},
 ]
 
 # 21 channel combinations
@@ -119,9 +185,13 @@ CHANNEL_CONFIGS = [
     {"name": "All 6", "channels": ["d620900d_motionSensor", "408981c2_contactSensor", "f2e891c6_powerMeter", "d620900d_temperatureMeasurement", "ccea734e_temperatureMeasurement", "408981c2_temperatureMeasurement"]},
 ]
 
+# ── Group C: Classifier × Layer at Long Contexts ───────────────────
 CLASSIFIER_NAMES = ["random_forest", "svm", "nearest_centroid"]
-OUTPUT_TOKENS = ["combined", "cls", "mean"]
-TARGET_SEQ_LENS = [64, 96, 128, 192, 256, 512]
+GROUP_C_CONTEXTS = [
+    {"name": "121min", "context_before": 60, "context_after": 60},
+    {"name": "241min", "context_before": 120, "context_after": 120},
+    {"name": "361min", "context_before": 180, "context_after": 180},
+]
 
 
 # ============================================================================
@@ -241,12 +311,14 @@ def run_train_test_eval(
 # ============================================================================
 
 def run_group_a(cfg: dict, device: str, output_dir: Path) -> list[dict]:
-    """Sweep context windows × layers with RF classifier.
+    """Deep context window exploration with RF classifier.
 
-    14 contexts × 6 layers = 84 experiments.
+    21 symmetric + 10 backward + 16 asym-past + 4 asym-future = 51 configs.
+    Fixed: L2 (best layer from initial round), RF, M+C, combined token.
     """
+    n_total = len(ALL_CONTEXT_CONFIGS)
     logger.info("=" * 70)
-    logger.info("GROUP A: Context Window × Layer Sweep (84 experiments)")
+    logger.info("GROUP A: Context Window Deep Exploration (%d experiments)", n_total)
     logger.info("=" * 70)
 
     results = []
@@ -254,99 +326,110 @@ def run_group_a(cfg: dict, device: str, output_dir: Path) -> list[dict]:
     split_date = cfg.get("split_date", "2026-02-15")
     pretrained = cfg["model"]["pretrained_name"]
     seed = cfg.get("seed", 42)
+    default_layer = cfg.get("default_layer", 2)  # L2 best from initial round
 
-    for ctx_cfg in CONTEXT_CONFIGS:
+    # Load sensor data once (shared across all context configs)
+    prep_cfg = PreprocessConfig(
+        sensor_csv=cfg["data"]["sensor_csv"],
+        label_csv=cfg["data"]["label_csv"],
+        label_format="events",
+        initial_occupancy=cfg["data"].get("initial_occupancy", 0),
+        binarize=True,
+        channels=default_channels,
+    )
+    sensor_arr, train_labels, test_labels, ch_names, timestamps = (
+        load_occupancy_data(prep_cfg, split_date=split_date)
+    )
+    all_labels = np.where(train_labels >= 0, train_labels, test_labels)
+
+    for i, ctx_cfg in enumerate(ALL_CONTEXT_CONFIGS, 1):
         ctx_name = ctx_cfg["name"]
-        logger.info("--- Context: %s ---", ctx_name)
+        ctx_before = ctx_cfg["context_before"]
+        ctx_after = ctx_cfg["context_after"]
+        total_min = ctx_before + 1 + ctx_after
+        logger.info("--- [%d/%d] Context: %s (total %dmin) ---", i, n_total, ctx_name, total_min)
+        t0 = time.time()
 
-        # Build dataset with this context configuration
-        ds_config = DatasetConfig(
-            context_mode=ctx_cfg["context_mode"],
-            context_before=ctx_cfg["context_before"],
-            context_after=ctx_cfg["context_after"],
-            stride=cfg.get("stride", 1),
-        )
+        try:
+            ds_config = DatasetConfig(
+                context_mode="bidirectional",
+                context_before=ctx_before,
+                context_after=ctx_after,
+                stride=cfg.get("stride", 1),
+            )
+            dataset = OccupancyDataset(sensor_arr, all_labels, timestamps, ds_config)
+            train_mask, test_mask = dataset.get_train_test_split(split_date)
 
-        prep_cfg = PreprocessConfig(
-            sensor_csv=cfg["data"]["sensor_csv"],
-            label_csv=cfg["data"]["label_csv"],
-            label_format="events",
-            initial_occupancy=cfg["data"].get("initial_occupancy", 0),
-            binarize=True,
-            channels=default_channels,
-        )
+            if train_mask.sum() == 0 or test_mask.sum() == 0:
+                logger.warning("Skipping %s: empty train or test split", ctx_name)
+                continue
 
-        sensor_arr, train_labels, test_labels, ch_names, timestamps = (
-            load_occupancy_data(prep_cfg, split_date=split_date)
-        )
+            trainer = load_mantis_model(pretrained, default_layer, "combined", device)
+            Z = extract_embeddings(trainer, dataset, device)
+            del trainer
 
-        # Build unified dataset then split
-        all_labels = np.where(train_labels >= 0, train_labels, test_labels)
-        dataset = OccupancyDataset(sensor_arr, all_labels, timestamps, ds_config)
-        train_mask, test_mask = dataset.get_train_test_split(split_date)
+            Z_train = Z[train_mask]
+            y_train = dataset.labels[train_mask]
+            Z_test = Z[test_mask]
+            y_test = dataset.labels[test_mask]
 
-        if train_mask.sum() == 0 or test_mask.sum() == 0:
-            logger.warning("Skipping %s: empty train or test split", ctx_name)
-            continue
+            metrics = run_train_test_eval(Z_train, y_train, Z_test, y_test, "random_forest", seed)
+            elapsed = time.time() - t0
 
-        for layer in ALL_LAYERS:
-            exp_name = f"{ctx_name} | L{layer}"
-            logger.info("  %s", exp_name)
-            t0 = time.time()
+            # Determine subgroup for analysis
+            if ctx_after == 0:
+                subgroup = "backward"
+            elif ctx_before == ctx_after:
+                subgroup = "symmetric"
+            elif ctx_before > ctx_after:
+                subgroup = "asym_past"
+            else:
+                subgroup = "asym_future"
 
-            try:
-                trainer = load_mantis_model(pretrained, layer, "combined", device)
-                Z = extract_embeddings(trainer, dataset, device)
-                del trainer
-
-                X_all, y_all = Z, dataset.labels
-                Z_train = X_all[train_mask]
-                y_train = y_all[train_mask]
-                Z_test = X_all[test_mask]
-                y_test = y_all[test_mask]
-
-                metrics = run_train_test_eval(Z_train, y_train, Z_test, y_test, "random_forest", seed)
-                elapsed = time.time() - t0
-
-                row = {
-                    "group": "A",
-                    "context": ctx_name,
-                    "context_before": ctx_cfg["context_before"],
-                    "context_after": ctx_cfg["context_after"],
-                    "layer": layer,
-                    "channels": "+".join([c.split("_")[0][0].upper() for c in default_channels]),
-                    "classifier": "RF",
-                    "output_token": "combined",
-                    "accuracy": metrics.accuracy,
-                    "f1": metrics.f1,
-                    "auc": metrics.roc_auc if not np.isnan(metrics.roc_auc) else None,
-                    "eer": metrics.eer if not np.isnan(metrics.eer) else None,
-                    "ci_lower": metrics.ci_lower,
-                    "ci_upper": metrics.ci_upper,
-                    "n_train": int(train_mask.sum()),
-                    "n_test": int(test_mask.sum()),
-                    "time_s": round(elapsed, 1),
-                }
-                results.append(row)
-                logger.info(
-                    "    Acc=%.4f  F1=%.4f  AUC=%.4f  (%.1fs)",
-                    metrics.accuracy, metrics.f1,
-                    metrics.roc_auc if not np.isnan(metrics.roc_auc) else 0.0,
-                    elapsed,
-                )
-            except Exception as e:
-                logger.error("    FAILED: %s", e)
-                results.append({
-                    "group": "A", "context": ctx_name, "layer": layer,
-                    "error": str(e),
-                })
+            row = {
+                "group": "A",
+                "subgroup": subgroup,
+                "context": ctx_name,
+                "context_before": ctx_before,
+                "context_after": ctx_after,
+                "total_context_min": total_min,
+                "layer": default_layer,
+                "channels": "+".join([c.split("_")[0][0].upper() for c in default_channels]),
+                "classifier": "RF",
+                "output_token": "combined",
+                "accuracy": metrics.accuracy,
+                "f1": metrics.f1,
+                "f1_macro": metrics.f1_macro,
+                "auc": metrics.roc_auc if not np.isnan(metrics.roc_auc) else None,
+                "eer": metrics.eer if not np.isnan(metrics.eer) else None,
+                "ci_lower": metrics.ci_lower,
+                "ci_upper": metrics.ci_upper,
+                "n_train": int(train_mask.sum()),
+                "n_test": int(test_mask.sum()),
+                "embed_dim": Z.shape[1],
+                "time_s": round(elapsed, 1),
+            }
+            results.append(row)
+            logger.info(
+                "    Acc=%.4f  F1=%.4f  AUC=%.4f  (%.1fs)",
+                metrics.accuracy, metrics.f1,
+                metrics.roc_auc if not np.isnan(metrics.roc_auc) else 0.0,
+                elapsed,
+            )
+        except Exception as e:
+            logger.error("    FAILED: %s", e)
+            results.append({
+                "group": "A", "context": ctx_name,
+                "context_before": ctx_before, "context_after": ctx_after,
+                "layer": default_layer, "error": str(e),
+            })
 
     # Save results
     df = pd.DataFrame(results)
     tables_dir = output_dir / "tables"
     tables_dir.mkdir(parents=True, exist_ok=True)
-    df.to_csv(tables_dir / "group_a_context_layer.csv", index=False)
-    logger.info("Saved: %s (%d rows)", tables_dir / "group_a_context_layer.csv", len(df))
+    df.to_csv(tables_dir / "group_a_context_deep.csv", index=False)
+    logger.info("Saved: %s (%d rows)", tables_dir / "group_a_context_deep.csv", len(df))
 
     return results
 
@@ -356,67 +439,67 @@ def run_group_a(cfg: dict, device: str, output_dir: Path) -> list[dict]:
 # ============================================================================
 
 def run_group_b(cfg: dict, device: str, output_dir: Path) -> list[dict]:
-    """Sweep channel combinations × layers with RF classifier.
+    """Channel ablation at multiple context sizes.
 
-    21 channels × 6 layers = 126 experiments.
+    21 channel combos × 3 contexts (61min, 121min, 241min) = 63 experiments.
+    Fixed: L2 (best), RF, combined token.
+    Goal: Check if channel importance varies with context length.
     """
+    n_total = len(CHANNEL_CONFIGS) * len(GROUP_B_CONTEXTS)
     logger.info("=" * 70)
-    logger.info("GROUP B: Channel Ablation × Layer Sweep (126 experiments)")
+    logger.info("GROUP B: Channel Ablation × Context (%d experiments)", n_total)
     logger.info("=" * 70)
 
     results = []
     split_date = cfg.get("split_date", "2026-02-15")
     pretrained = cfg["model"]["pretrained_name"]
     seed = cfg.get("seed", 42)
+    default_layer = cfg.get("default_layer", 2)
+    exp_idx = 0
 
-    # Use default 9min bidirectional context
-    ctx_before = cfg.get("default_context_before", 4)
-    ctx_after = cfg.get("default_context_after", 4)
+    for ctx_cfg in GROUP_B_CONTEXTS:
+        ctx_name = ctx_cfg["name"]
+        ctx_before = ctx_cfg["context_before"]
+        ctx_after = ctx_cfg["context_after"]
+        logger.info("=== Context: %s (%d+1+%d) ===", ctx_name, ctx_before, ctx_after)
 
-    for ch_cfg in CHANNEL_CONFIGS:
-        ch_name = ch_cfg["name"]
-        channels = ch_cfg["channels"]
-        logger.info("--- Channels: %s ---", ch_name)
-
-        ds_config = DatasetConfig(
-            context_mode="bidirectional",
-            context_before=ctx_before,
-            context_after=ctx_after,
-            stride=cfg.get("stride", 1),
-        )
-
-        prep_cfg = PreprocessConfig(
-            sensor_csv=cfg["data"]["sensor_csv"],
-            label_csv=cfg["data"]["label_csv"],
-            label_format="events",
-            initial_occupancy=cfg["data"].get("initial_occupancy", 0),
-            binarize=True,
-            channels=channels,
-        )
-
-        try:
-            sensor_arr, train_labels, test_labels, ch_names, timestamps = (
-                load_occupancy_data(prep_cfg, split_date=split_date)
-            )
-        except Exception as e:
-            logger.warning("Skipping %s: %s", ch_name, e)
-            continue
-
-        all_labels = np.where(train_labels >= 0, train_labels, test_labels)
-        dataset = OccupancyDataset(sensor_arr, all_labels, timestamps, ds_config)
-        train_mask, test_mask = dataset.get_train_test_split(split_date)
-
-        if train_mask.sum() == 0 or test_mask.sum() == 0:
-            logger.warning("Skipping %s: empty train or test split", ch_name)
-            continue
-
-        for layer in ALL_LAYERS:
-            exp_name = f"{ch_name} | L{layer}"
-            logger.info("  %s", exp_name)
+        for ch_cfg in CHANNEL_CONFIGS:
+            ch_name = ch_cfg["name"]
+            channels = ch_cfg["channels"]
+            exp_idx += 1
+            logger.info("  [%d/%d] %s | %s", exp_idx, n_total, ctx_name, ch_name)
             t0 = time.time()
 
             try:
-                trainer = load_mantis_model(pretrained, layer, "combined", device)
+                ds_config = DatasetConfig(
+                    context_mode="bidirectional",
+                    context_before=ctx_before,
+                    context_after=ctx_after,
+                    stride=cfg.get("stride", 1),
+                )
+
+                prep_cfg = PreprocessConfig(
+                    sensor_csv=cfg["data"]["sensor_csv"],
+                    label_csv=cfg["data"]["label_csv"],
+                    label_format="events",
+                    initial_occupancy=cfg["data"].get("initial_occupancy", 0),
+                    binarize=True,
+                    channels=channels,
+                )
+
+                sensor_arr, train_labels, test_labels, ch_names_loaded, timestamps = (
+                    load_occupancy_data(prep_cfg, split_date=split_date)
+                )
+
+                all_labels = np.where(train_labels >= 0, train_labels, test_labels)
+                dataset = OccupancyDataset(sensor_arr, all_labels, timestamps, ds_config)
+                train_mask, test_mask = dataset.get_train_test_split(split_date)
+
+                if train_mask.sum() == 0 or test_mask.sum() == 0:
+                    logger.warning("Skipping %s|%s: empty split", ctx_name, ch_name)
+                    continue
+
+                trainer = load_mantis_model(pretrained, default_layer, "combined", device)
                 Z = extract_embeddings(trainer, dataset, device)
                 del trainer
 
@@ -432,17 +515,22 @@ def run_group_b(cfg: dict, device: str, output_dir: Path) -> list[dict]:
                     "group": "B",
                     "channels": ch_name,
                     "n_channels": len(channels),
-                    "layer": layer,
+                    "layer": default_layer,
                     "context": f"{ctx_before}+1+{ctx_after}",
+                    "context_name": ctx_name,
+                    "context_before": ctx_before,
+                    "context_after": ctx_after,
                     "classifier": "RF",
                     "accuracy": metrics.accuracy,
                     "f1": metrics.f1,
+                    "f1_macro": metrics.f1_macro,
                     "auc": metrics.roc_auc if not np.isnan(metrics.roc_auc) else None,
                     "eer": metrics.eer if not np.isnan(metrics.eer) else None,
                     "ci_lower": metrics.ci_lower,
                     "ci_upper": metrics.ci_upper,
                     "n_train": int(train_mask.sum()),
                     "n_test": int(test_mask.sum()),
+                    "embed_dim": Z.shape[1],
                     "time_s": round(elapsed, 1),
                 }
                 results.append(row)
@@ -455,15 +543,16 @@ def run_group_b(cfg: dict, device: str, output_dir: Path) -> list[dict]:
             except Exception as e:
                 logger.error("    FAILED: %s", e)
                 results.append({
-                    "group": "B", "channels": ch_name, "layer": layer,
+                    "group": "B", "channels": ch_name, "context_name": ctx_name,
+                    "context_before": ctx_before, "context_after": ctx_after,
                     "error": str(e),
                 })
 
     df = pd.DataFrame(results)
     tables_dir = output_dir / "tables"
     tables_dir.mkdir(parents=True, exist_ok=True)
-    df.to_csv(tables_dir / "group_b_channel_ablation.csv", index=False)
-    logger.info("Saved: %s (%d rows)", tables_dir / "group_b_channel_ablation.csv", len(df))
+    df.to_csv(tables_dir / "group_b_channel_context.csv", index=False)
+    logger.info("Saved: %s (%d rows)", tables_dir / "group_b_channel_context.csv", len(df))
 
     return results
 
@@ -473,12 +562,15 @@ def run_group_b(cfg: dict, device: str, output_dir: Path) -> list[dict]:
 # ============================================================================
 
 def run_group_c(cfg: dict, device: str, output_dir: Path) -> list[dict]:
-    """Sweep classifiers × output tokens × interpolation lengths.
+    """Classifier × Layer sweep at long contexts.
 
-    3 classifiers × 3 tokens × 6 target_seq_len = 54 experiments.
+    3 classifiers × 6 layers × 3 contexts (121, 241, 361 min) = 54 experiments.
+    Fixed: M+C channels, combined token.
+    Goal: Find best classifier/layer at contexts where it matters.
     """
+    n_total = len(CLASSIFIER_NAMES) * len(ALL_LAYERS) * len(GROUP_C_CONTEXTS)
     logger.info("=" * 70)
-    logger.info("GROUP C: Classifier × Token × SeqLen Sweep (54 experiments)")
+    logger.info("GROUP C: Classifier × Layer at Long Contexts (%d experiments)", n_total)
     logger.info("=" * 70)
 
     results = []
@@ -486,10 +578,8 @@ def run_group_c(cfg: dict, device: str, output_dir: Path) -> list[dict]:
     split_date = cfg.get("split_date", "2026-02-15")
     pretrained = cfg["model"]["pretrained_name"]
     seed = cfg.get("seed", 42)
-    default_layer = cfg.get("default_layer", 3)
-    ctx_before = cfg.get("default_context_before", 4)
-    ctx_after = cfg.get("default_context_after", 4)
 
+    # Load sensor data once
     prep_cfg = PreprocessConfig(
         sensor_csv=cfg["data"]["sensor_csv"],
         label_csv=cfg["data"]["label_csv"],
@@ -498,44 +588,51 @@ def run_group_c(cfg: dict, device: str, output_dir: Path) -> list[dict]:
         binarize=True,
         channels=default_channels,
     )
+    sensor_arr, train_labels, test_labels, ch_names, timestamps = (
+        load_occupancy_data(prep_cfg, split_date=split_date)
+    )
+    all_labels = np.where(train_labels >= 0, train_labels, test_labels)
 
-    for output_token in OUTPUT_TOKENS:
-        for tgt_len in TARGET_SEQ_LENS:
-            logger.info("--- Token=%s, target_seq_len=%d ---", output_token, tgt_len)
+    exp_idx = 0
+    for ctx_cfg in GROUP_C_CONTEXTS:
+        ctx_name = ctx_cfg["name"]
+        ctx_before = ctx_cfg["context_before"]
+        ctx_after = ctx_cfg["context_after"]
+        logger.info("=== Context: %s (%d+1+%d) ===", ctx_name, ctx_before, ctx_after)
 
-            ds_config = DatasetConfig(
-                context_mode="bidirectional",
-                context_before=ctx_before,
-                context_after=ctx_after,
-                stride=cfg.get("stride", 1),
-                target_seq_len=tgt_len,
-            )
+        ds_config = DatasetConfig(
+            context_mode="bidirectional",
+            context_before=ctx_before,
+            context_after=ctx_after,
+            stride=cfg.get("stride", 1),
+        )
 
-            try:
-                sensor_arr, train_labels, test_labels, ch_names, timestamps = (
-                    load_occupancy_data(prep_cfg, split_date=split_date)
-                )
-            except Exception as e:
-                logger.warning("Skipping token=%s tgt=%d: %s", output_token, tgt_len, e)
-                continue
-
-            all_labels = np.where(train_labels >= 0, train_labels, test_labels)
+        try:
             dataset = OccupancyDataset(sensor_arr, all_labels, timestamps, ds_config)
             train_mask, test_mask = dataset.get_train_test_split(split_date)
+        except Exception as e:
+            logger.error("Dataset build failed for %s: %s", ctx_name, e)
+            continue
 
-            if train_mask.sum() == 0 or test_mask.sum() == 0:
-                continue
+        if train_mask.sum() == 0 or test_mask.sum() == 0:
+            logger.warning("Skipping %s: empty split", ctx_name)
+            continue
 
-            # Extract embeddings once for this token + layer
-            t0_emb = time.time()
+        for layer in ALL_LAYERS:
+            # Extract embeddings once per context × layer
+            logger.info("  --- L%d ---", layer)
             try:
-                trainer = load_mantis_model(pretrained, default_layer, output_token, device)
+                trainer = load_mantis_model(pretrained, layer, "combined", device)
                 Z = extract_embeddings(trainer, dataset, device)
                 del trainer
             except Exception as e:
-                logger.error("Embedding extraction failed: %s", e)
+                logger.error("  Embedding extraction failed (L%d): %s", layer, e)
+                for clf_name in CLASSIFIER_NAMES:
+                    results.append({
+                        "group": "C", "classifier": clf_name, "layer": layer,
+                        "context_name": ctx_name, "error": str(e),
+                    })
                 continue
-            emb_time = time.time() - t0_emb
 
             Z_train = Z[train_mask]
             y_train = dataset.labels[train_mask]
@@ -543,7 +640,8 @@ def run_group_c(cfg: dict, device: str, output_dir: Path) -> list[dict]:
             y_test = dataset.labels[test_mask]
 
             for clf_name in CLASSIFIER_NAMES:
-                exp_name = f"Token={output_token} | tgt={tgt_len} | {clf_name}"
+                exp_idx += 1
+                exp_name = f"{ctx_name} | L{layer} | {clf_name}"
                 t0 = time.time()
 
                 try:
@@ -553,13 +651,16 @@ def run_group_c(cfg: dict, device: str, output_dir: Path) -> list[dict]:
                     row = {
                         "group": "C",
                         "classifier": clf_name,
-                        "output_token": output_token,
-                        "target_seq_len": tgt_len,
-                        "layer": default_layer,
-                        "channels": "+".join([c.split("_")[0][0].upper() for c in default_channels]),
+                        "layer": layer,
+                        "context_name": ctx_name,
                         "context": f"{ctx_before}+1+{ctx_after}",
+                        "context_before": ctx_before,
+                        "context_after": ctx_after,
+                        "channels": "+".join([c.split("_")[0][0].upper() for c in default_channels]),
+                        "output_token": "combined",
                         "accuracy": metrics.accuracy,
                         "f1": metrics.f1,
+                        "f1_macro": metrics.f1_macro,
                         "auc": metrics.roc_auc if not np.isnan(metrics.roc_auc) else None,
                         "eer": metrics.eer if not np.isnan(metrics.eer) else None,
                         "ci_lower": metrics.ci_lower,
@@ -568,28 +669,27 @@ def run_group_c(cfg: dict, device: str, output_dir: Path) -> list[dict]:
                         "n_test": int(test_mask.sum()),
                         "embed_dim": Z.shape[1],
                         "time_s": round(elapsed, 1),
-                        "embed_time_s": round(emb_time, 1),
                     }
                     results.append(row)
                     logger.info(
-                        "  %s: Acc=%.4f  F1=%.4f  AUC=%.4f  (%.1fs)",
-                        exp_name, metrics.accuracy, metrics.f1,
+                        "  [%d/%d] %s: Acc=%.4f  F1=%.4f  AUC=%.4f  (%.1fs)",
+                        exp_idx, n_total, exp_name,
+                        metrics.accuracy, metrics.f1,
                         metrics.roc_auc if not np.isnan(metrics.roc_auc) else 0.0,
                         elapsed,
                     )
                 except Exception as e:
                     logger.error("  %s FAILED: %s", exp_name, e)
                     results.append({
-                        "group": "C", "classifier": clf_name,
-                        "output_token": output_token, "target_seq_len": tgt_len,
-                        "error": str(e),
+                        "group": "C", "classifier": clf_name, "layer": layer,
+                        "context_name": ctx_name, "error": str(e),
                     })
 
     df = pd.DataFrame(results)
     tables_dir = output_dir / "tables"
     tables_dir.mkdir(parents=True, exist_ok=True)
-    df.to_csv(tables_dir / "group_c_classifier_token.csv", index=False)
-    logger.info("Saved: %s (%d rows)", tables_dir / "group_c_classifier_token.csv", len(df))
+    df.to_csv(tables_dir / "group_c_classifier_layer.csv", index=False)
+    logger.info("Saved: %s (%d rows)", tables_dir / "group_c_classifier_layer.csv", len(df))
 
     return results
 
@@ -601,7 +701,10 @@ def run_group_c(cfg: dict, device: str, output_dir: Path) -> list[dict]:
 def generate_summary(all_results: list[dict], output_dir: Path):
     """Generate combined ranking and summary report."""
     df = pd.DataFrame(all_results)
-    valid = df[~df.get("error", pd.Series(dtype=str)).notna() | df.get("error", pd.Series(dtype=str)).isna()]
+    if "error" in df.columns:
+        valid = df[df["error"].isna()]
+    else:
+        valid = df
     if "accuracy" not in valid.columns or len(valid) == 0:
         logger.warning("No valid results to summarize")
         return

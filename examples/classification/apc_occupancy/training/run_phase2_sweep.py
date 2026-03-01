@@ -1255,8 +1255,8 @@ def main():
     default_channels = cfg.get("default_channels", ["d620900d_motionSensor", "408981c2_contactSensor"])
 
     # Dataset config from Phase 1 best (or config defaults)
-    ctx_before = cfg.get("default_context_before", 4)
-    ctx_after = cfg.get("default_context_after", 4)
+    ctx_before = cfg.get("default_context_before", 120)
+    ctx_after = cfg.get("default_context_after", 120)
 
     ds_config = DatasetConfig(
         context_mode="bidirectional",
@@ -1290,7 +1290,7 @@ def main():
     # Model config
     pretrained = cfg["model"]["pretrained_name"]
     output_token = cfg["model"].get("output_token", "combined")
-    primary_layer = args.layer if args.layer is not None else cfg.get("default_layer", 3)
+    primary_layer = args.layer if args.layer is not None else cfg.get("default_layer", 2)
 
     # Training config
     train_raw = cfg.get("training", {})
