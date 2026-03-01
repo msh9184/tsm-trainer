@@ -751,6 +751,42 @@ def _make_result_row(
     return row
 
 
+def _format_metrics_log(
+    idx: int, total: int, label: str,
+    metrics: ClassificationMetrics, elapsed: float,
+    extra: str = "",
+) -> str:
+    """Format per-experiment log line with all key metrics.
+
+    Output format (2 lines):
+      [  1/240] M | 91min | RF                                          (1.9s)
+               AUC=0.6841 EER=0.3159 | Acc=0.6773 F1=0.6512 P=0.6800 R=0.6234 | CI=[0.665,0.690]
+    """
+    def _v(val, fmt=".4f"):
+        if isinstance(val, float) and np.isnan(val):
+            return "  N/A "
+        return f"{val:{fmt}}"
+
+    auc = _v(metrics.roc_auc)
+    eer = _v(metrics.eer)
+    acc = _v(metrics.accuracy)
+    f1 = _v(metrics.f1)
+    prec = _v(metrics.precision)
+    rec = _v(metrics.recall)
+
+    ci_str = ""
+    if metrics.ci_lower is not None and metrics.ci_upper is not None:
+        ci_str = f" | CI=[{metrics.ci_lower:.3f},{metrics.ci_upper:.3f}]"
+
+    extra_str = f" {extra}" if extra else ""
+    line1 = f"  [{idx:3d}/{total}] {label}{extra_str}  ({elapsed:.1f}s)"
+    line2 = (
+        f"           AUC={auc} EER={eer}"
+        f" | Acc={acc} F1={f1} P={prec} R={rec}{ci_str}"
+    )
+    return f"{line1}\n{line2}"
+
+
 def _cleanup_gpu():
     """Free GPU memory."""
     gc.collect()
@@ -901,11 +937,7 @@ def run_group_d(cfg: dict, device: str, output_dir: Path) -> list[dict]:
                     )
                     results.append(row)
                     logger.info(
-                        "  [%d/%d] %s: Acc=%.4f AUC=%.4f (%.1fs)",
-                        exp_idx, n_total, exp_label,
-                        metrics.accuracy,
-                        metrics.roc_auc if not np.isnan(metrics.roc_auc) else 0.0,
-                        elapsed,
+                        _format_metrics_log(exp_idx, n_total, exp_label, metrics, elapsed),
                     )
                 except Exception as e:
                     logger.error("  [%d/%d] %s FAILED: %s", exp_idx, n_total, exp_label, e)
@@ -1028,11 +1060,7 @@ def run_group_e(cfg: dict, device: str, output_dir: Path) -> list[dict]:
                         )
                         results.append(row)
                         logger.info(
-                            "  [%d/%d] %s: Acc=%.4f AUC=%.4f (%.1fs)",
-                            exp_idx, n_total, exp_label,
-                            metrics.accuracy,
-                            metrics.roc_auc if not np.isnan(metrics.roc_auc) else 0.0,
-                            elapsed,
+                            _format_metrics_log(exp_idx, n_total, exp_label, metrics, elapsed),
                         )
                     except Exception as e:
                         logger.error("  [%d/%d] %s FAILED: %s", exp_idx, n_total, exp_label, e)
@@ -1150,11 +1178,7 @@ def run_group_f(cfg: dict, device: str, output_dir: Path) -> list[dict]:
                     )
                     results.append(row)
                     logger.info(
-                        "  [%d/%d] %s: Acc=%.4f AUC=%.4f (%.1fs)",
-                        exp_idx, n_total, exp_label,
-                        metrics.accuracy,
-                        metrics.roc_auc if not np.isnan(metrics.roc_auc) else 0.0,
-                        elapsed,
+                        _format_metrics_log(exp_idx, n_total, exp_label, metrics, elapsed),
                     )
                 except Exception as e:
                     logger.error("  [%d/%d] %s FAILED: %s", exp_idx, n_total, exp_label, e)
@@ -1274,11 +1298,7 @@ def run_group_g(cfg: dict, device: str, output_dir: Path) -> list[dict]:
                     )
                     results.append(row)
                     logger.info(
-                        "  [%d/%d] %s: Acc=%.4f AUC=%.4f (%.1fs)",
-                        exp_idx, n_total, exp_label,
-                        metrics.accuracy,
-                        metrics.roc_auc if not np.isnan(metrics.roc_auc) else 0.0,
-                        elapsed,
+                        _format_metrics_log(exp_idx, n_total, exp_label, metrics, elapsed),
                     )
                 except Exception as e:
                     logger.error("  [%d/%d] %s FAILED: %s", exp_idx, n_total, exp_label, e)
@@ -1420,11 +1440,10 @@ def run_group_h(cfg: dict, device: str, output_dir: Path) -> list[dict]:
                         )
                         results.append(row)
                         logger.info(
-                            "  [%d/%d] %s: Acc=%.4f AUC=%.4f dim=%d (%.1fs)",
-                            exp_idx, n_total, exp_label,
-                            metrics.accuracy,
-                            metrics.roc_auc if not np.isnan(metrics.roc_auc) else 0.0,
-                            Z.shape[1], elapsed,
+                            _format_metrics_log(
+                                exp_idx, n_total, exp_label, metrics, elapsed,
+                                extra=f"dim={Z.shape[1]}",
+                            ),
                         )
                     except Exception as e:
                         logger.error("  [%d/%d] %s FAILED: %s",
@@ -1532,11 +1551,7 @@ def run_group_h(cfg: dict, device: str, output_dir: Path) -> list[dict]:
                     )
                     results.append(row)
                     logger.info(
-                        "  [%d/%d] %s: Acc=%.4f AUC=%.4f (%.1fs)",
-                        exp_idx, n_total, exp_label,
-                        metrics.accuracy,
-                        metrics.roc_auc if not np.isnan(metrics.roc_auc) else 0.0,
-                        elapsed,
+                        _format_metrics_log(exp_idx, n_total, exp_label, metrics, elapsed),
                     )
                 except Exception as e:
                     logger.error("  [%d/%d] %s FAILED: %s",
@@ -1670,11 +1685,7 @@ def run_group_i(cfg: dict, device: str, output_dir: Path) -> list[dict]:
                     )
                     results.append(row)
                     logger.info(
-                        "  [%d/%d] %s: Acc=%.4f AUC=%.4f (%.1fs)",
-                        exp_idx, n_total, exp_label,
-                        metrics.accuracy,
-                        metrics.roc_auc if not np.isnan(metrics.roc_auc) else 0.0,
-                        elapsed,
+                        _format_metrics_log(exp_idx, n_total, exp_label, metrics, elapsed),
                     )
                 except Exception as e:
                     logger.error("  [%d/%d] %s FAILED: %s", exp_idx, n_total, exp_label, e)
@@ -1757,11 +1768,7 @@ def run_group_i(cfg: dict, device: str, output_dir: Path) -> list[dict]:
                     )
                     results.append(row)
                     logger.info(
-                        "  [%d/%d] %s: Acc=%.4f AUC=%.4f (%.1fs)",
-                        exp_idx, n_total, exp_label,
-                        metrics.accuracy,
-                        metrics.roc_auc if not np.isnan(metrics.roc_auc) else 0.0,
-                        elapsed,
+                        _format_metrics_log(exp_idx, n_total, exp_label, metrics, elapsed),
                     )
                 except Exception as e:
                     logger.error("  [%d/%d] %s FAILED: %s", exp_idx, n_total, exp_label, e)
@@ -1845,11 +1852,7 @@ def run_group_i(cfg: dict, device: str, output_dir: Path) -> list[dict]:
                     )
                     results.append(row)
                     logger.info(
-                        "  [%d/%d] %s: Acc=%.4f AUC=%.4f (%.1fs)",
-                        exp_idx, n_total, exp_label,
-                        metrics.accuracy,
-                        metrics.roc_auc if not np.isnan(metrics.roc_auc) else 0.0,
-                        elapsed,
+                        _format_metrics_log(exp_idx, n_total, exp_label, metrics, elapsed),
                     )
                 except Exception as e:
                     logger.error("  [%d/%d] %s FAILED: %s", exp_idx, n_total, exp_label, e)
@@ -1933,11 +1936,7 @@ def run_group_i(cfg: dict, device: str, output_dir: Path) -> list[dict]:
                     )
                     results.append(row)
                     logger.info(
-                        "  [%d/%d] %s: Acc=%.4f AUC=%.4f (%.1fs)",
-                        exp_idx, n_total, exp_label,
-                        metrics.accuracy,
-                        metrics.roc_auc if not np.isnan(metrics.roc_auc) else 0.0,
-                        elapsed,
+                        _format_metrics_log(exp_idx, n_total, exp_label, metrics, elapsed),
                     )
                 except Exception as e:
                     logger.error("  [%d/%d] %s FAILED: %s", exp_idx, n_total, exp_label, e)
@@ -2021,11 +2020,7 @@ def run_group_i(cfg: dict, device: str, output_dir: Path) -> list[dict]:
                     )
                     results.append(row)
                     logger.info(
-                        "  [%d/%d] %s: Acc=%.4f AUC=%.4f (%.1fs)",
-                        exp_idx, n_total, exp_label,
-                        metrics.accuracy,
-                        metrics.roc_auc if not np.isnan(metrics.roc_auc) else 0.0,
-                        elapsed,
+                        _format_metrics_log(exp_idx, n_total, exp_label, metrics, elapsed),
                     )
                 except Exception as e:
                     logger.error("  [%d/%d] %s FAILED: %s", exp_idx, n_total, exp_label, e)
