@@ -33,14 +33,15 @@ Six sweep groups (run independently on separate GPUs):
     - Part H2: 12 per-channel-layer configs × 2 contexts × 2 classifiers = 48
     - Goal: Test multi-layer information fusion strategies
 
-  Group I — Alternative Classifiers + Special Configs (~192 experiments)
+  Group I — Alternative Classifiers + Special Configs (~294 experiments)
     - Part I1: 8 alt classifiers × 5 channels × 2 contexts = 80
     - Part I2: Extended contexts (481-1441min) × 4 channels × 2 classifiers = 40
-    - Part I3: Backward-only mode at long contexts = 24
-    - Part I4: Asymmetric optimized configs = 48
-    - Goal: Explore classifiers and edge-case configurations
+    - Part I3: Backward-only mode (9 contexts) × 3 channels × 2 classifiers = 54
+    - Part I4: Asymmetric past-heavy (18 configs) × 2 channels × 2 classifiers = 72
+    - Part I5: Future-heavy (8 configs) × 3 channels × 2 classifiers = 48
+    - Goal: Explore classifiers, context directionality, and edge-case configs
 
-Total: ~1,266 experiments across 6 servers.
+Total: ~1,368 experiments across 6 servers.
 
 Usage:
   cd examples/classification/apc_occupancy
@@ -362,12 +363,17 @@ GROUP_I2_CLASSIFIERS = [
     {"name": "RF", "config": {"type": "random_forest"}},
 ]
 
-# I3: Backward-only mode — 4 contexts × 3 channels × 2 classifiers = 24
+# I3: Backward-only mode — 9 contexts × 3 channels × 2 classifiers = 54
 GROUP_I3_CONTEXTS = [
+    {"name": "bw_91min", "before": 90, "after": 0},
+    {"name": "bw_121min", "before": 120, "after": 0},
+    {"name": "bw_181min", "before": 180, "after": 0},
     {"name": "bw_241min", "before": 240, "after": 0},
     {"name": "bw_361min", "before": 360, "after": 0},
     {"name": "bw_481min", "before": 480, "after": 0},
     {"name": "bw_721min", "before": 720, "after": 0},
+    {"name": "bw_961min", "before": 960, "after": 0},
+    {"name": "bw_1441min", "before": 1440, "after": 0},
 ]
 
 GROUP_I3_CHANNELS = [
@@ -381,20 +387,29 @@ GROUP_I3_CLASSIFIERS = [
     {"name": "RF", "config": {"type": "random_forest"}},
 ]
 
-# I4: Asymmetric optimized (past-heavy) — 12 configs × 2 channels × 2 classifiers = 48
+# I4: Asymmetric (past-heavy) — 18 configs × 2 channels × 2 classifiers = 72
 GROUP_I4_CONTEXTS = [
+    # Moderate asymmetry
+    {"name": "asym_120p+5f", "before": 120, "after": 5},
     {"name": "asym_180p+60f", "before": 180, "after": 60},
     {"name": "asym_240p+30f", "before": 240, "after": 30},
     {"name": "asym_240p+60f", "before": 240, "after": 60},
     {"name": "asym_240p+120f", "before": 240, "after": 120},
     {"name": "asym_300p+60f", "before": 300, "after": 60},
+    # Strong past-heavy
+    {"name": "asym_360p+5f", "before": 360, "after": 5},
+    {"name": "asym_360p+10f", "before": 360, "after": 10},
     {"name": "asym_360p+30f", "before": 360, "after": 30},
     {"name": "asym_360p+60f", "before": 360, "after": 60},
     {"name": "asym_360p+120f", "before": 360, "after": 120},
+    # Large windows
+    {"name": "asym_480p+10f", "before": 480, "after": 10},
     {"name": "asym_480p+30f", "before": 480, "after": 30},
     {"name": "asym_480p+60f", "before": 480, "after": 60},
     {"name": "asym_480p+120f", "before": 480, "after": 120},
     {"name": "asym_720p+60f", "before": 720, "after": 60},
+    {"name": "asym_720p+120f", "before": 720, "after": 120},
+    {"name": "asym_960p+60f", "before": 960, "after": 60},
 ]
 
 GROUP_I4_CHANNELS = [
@@ -403,6 +418,30 @@ GROUP_I4_CHANNELS = [
 ]
 
 GROUP_I4_CLASSIFIERS = [
+    {"name": "SVM_rbf", "config": {"type": "svm", "kernel": "rbf", "C": 1.0}},
+    {"name": "RF", "config": {"type": "random_forest"}},
+]
+
+# I5: Future-heavy (reversed asymmetry) — 8 configs × 3 channels × 2 classifiers = 48
+# Tests whether future context is more informative than past for occupancy
+GROUP_I5_CONTEXTS = [
+    {"name": "fh_5p+120f", "before": 5, "after": 120},
+    {"name": "fh_10p+240f", "before": 10, "after": 240},
+    {"name": "fh_30p+180f", "before": 30, "after": 180},
+    {"name": "fh_30p+360f", "before": 30, "after": 360},
+    {"name": "fh_60p+180f", "before": 60, "after": 180},
+    {"name": "fh_60p+360f", "before": 60, "after": 360},
+    {"name": "fh_120p+360f", "before": 120, "after": 360},
+    {"name": "fh_120p+720f", "before": 120, "after": 720},
+]
+
+GROUP_I5_CHANNELS = [
+    {"name": "M+C", "keys": ["M", "C"]},
+    {"name": "M+C+T1", "keys": ["M", "C", "T1"]},
+    {"name": "T1+C", "keys": ["T1", "C"]},
+]
+
+GROUP_I5_CLASSIFIERS = [
     {"name": "SVM_rbf", "config": {"type": "svm", "kernel": "rbf", "C": 1.0}},
     {"name": "RF", "config": {"type": "random_forest"}},
 ]
@@ -565,12 +604,14 @@ def build_classifier_v2(config: dict, seed: int = 42):
     elif clf_type == "extra_trees":
         return ExtraTreesClassifier(n_estimators=200, random_state=seed, n_jobs=-1)
     elif clf_type == "adaboost":
-        return AdaBoostClassifier(n_estimators=100, random_state=seed, algorithm="SAMME")
+        return AdaBoostClassifier(n_estimators=100, random_state=seed)
     elif clf_type == "knn":
         n_neighbors = config.get("n_neighbors", 5)
         return KNeighborsClassifier(n_neighbors=n_neighbors, n_jobs=-1)
     elif clf_type == "ridge":
-        return RidgeClassifier(alpha=1.0)
+        from sklearn.calibration import CalibratedClassifierCV
+        base = RidgeClassifier(alpha=1.0)
+        return CalibratedClassifierCV(base, cv=3, method="sigmoid")
     elif clf_type == "lda":
         return LinearDiscriminantAnalysis()
     elif clf_type == "nearest_centroid":
@@ -586,9 +627,17 @@ def build_classifier_v2(config: dict, seed: int = 42):
 def _extract_prob_positive(clf, X_test) -> np.ndarray | None:
     """Extract P(class=1) from classifier, handling edge cases.
 
-    Falls back to decision_function for classifiers without predict_proba
-    (e.g., RidgeClassifier).
+    Falls back to decision_function for classifiers without predict_proba.
+    Returns None if probability extraction fails (AUC/EER will be NaN).
     """
+    # Check single-class: if model only saw one class, AUC is undefined
+    if hasattr(clf, "classes_") and len(clf.classes_) < 2:
+        logger.debug(
+            "Single-class classifier (classes=%s), returning None for probs",
+            clf.classes_,
+        )
+        return None
+
     if hasattr(clf, "predict_proba"):
         try:
             proba = clf.predict_proba(X_test)
@@ -596,17 +645,23 @@ def _extract_prob_positive(clf, X_test) -> np.ndarray | None:
                 classes = list(clf.classes_)
                 if 1 in classes:
                     return proba[:, classes.index(1)]
+                # Class 1 not seen → all probability is 0
+                logger.warning(
+                    "Class 1 not in clf.classes_=%s, returning zeros", classes,
+                )
                 return np.zeros(len(X_test))
             return proba[:, 1] if proba.shape[1] > 1 else proba[:, 0]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("predict_proba failed: %s", e)
 
     if hasattr(clf, "decision_function"):
         try:
             scores = clf.decision_function(X_test)
-            return scores if scores.ndim == 1 else scores[:, 1]
-        except Exception:
-            pass
+            if scores.ndim == 1:
+                return scores
+            return scores[:, 1] if scores.shape[1] > 1 else scores[:, 0]
+        except Exception as e:
+            logger.debug("decision_function failed: %s", e)
 
     return None
 
@@ -653,6 +708,12 @@ def _make_result_row(
     **extra,
 ) -> dict:
     """Build a standardized result row dict."""
+    def _safe_nan(v):
+        """Convert NaN to None for JSON-safe output."""
+        if isinstance(v, float) and np.isnan(v):
+            return None
+        return v
+
     row = {
         "group": group,
         "subgroup": subgroup,
@@ -664,13 +725,23 @@ def _make_result_row(
         "context_before": ctx_before,
         "context_after": ctx_after,
         "total_context_min": ctx_before + 1 + ctx_after,
+        # Primary metrics (threshold-independent)
+        "auc": _safe_nan(metrics.roc_auc),
+        "eer": _safe_nan(metrics.eer),
+        "eer_threshold": _safe_nan(metrics.eer_threshold),
+        # Secondary metrics
         "accuracy": metrics.accuracy,
         "f1": metrics.f1,
         "f1_macro": metrics.f1_macro,
-        "auc": metrics.roc_auc if not np.isnan(metrics.roc_auc) else None,
-        "eer": metrics.eer if not np.isnan(metrics.eer) else None,
+        "f1_weighted": metrics.f1_weighted,
+        "precision": metrics.precision,
+        "recall": metrics.recall,
+        "precision_macro": metrics.precision_macro,
+        "recall_macro": metrics.recall_macro,
+        # Confidence interval
         "ci_lower": metrics.ci_lower,
         "ci_upper": metrics.ci_upper,
+        # Metadata
         "n_train": n_train,
         "n_test": n_test,
         "embed_dim": embed_dim,
@@ -1495,21 +1566,24 @@ def run_group_h(cfg: dict, device: str, output_dir: Path) -> list[dict]:
 def run_group_i(cfg: dict, device: str, output_dir: Path) -> list[dict]:
     """I1: 8 alt classifiers × 5 channels × 2 contexts = 80.
     I2: 5 extended contexts × 4 channels × 2 classifiers = 40.
-    I3: 4 backward contexts × 3 channels × 2 classifiers = 24.
-    I4: 12 asymmetric × 2 channels × 2 classifiers = 48.
-    Total: 192 experiments.
+    I3: 9 backward contexts × 3 channels × 2 classifiers = 54.
+    I4: 18 asymmetric × 2 channels × 2 classifiers = 72.
+    I5: 8 future-heavy × 3 channels × 2 classifiers = 48.
+    Total: 294 experiments.
     """
     n_i1 = len(GROUP_I1_CLASSIFIERS) * len(GROUP_I1_CHANNELS) * len(GROUP_I1_CONTEXTS)
     n_i2 = len(GROUP_I2_CONTEXTS) * len(GROUP_I2_CHANNELS) * len(GROUP_I2_CLASSIFIERS)
     n_i3 = len(GROUP_I3_CONTEXTS) * len(GROUP_I3_CHANNELS) * len(GROUP_I3_CLASSIFIERS)
     n_i4 = len(GROUP_I4_CONTEXTS) * len(GROUP_I4_CHANNELS) * len(GROUP_I4_CLASSIFIERS)
-    n_total = n_i1 + n_i2 + n_i3 + n_i4
+    n_i5 = len(GROUP_I5_CONTEXTS) * len(GROUP_I5_CHANNELS) * len(GROUP_I5_CLASSIFIERS)
+    n_total = n_i1 + n_i2 + n_i3 + n_i4 + n_i5
     logger.info("=" * 70)
     logger.info("GROUP I: Alternative Classifiers + Special (%d experiments)", n_total)
     logger.info("  I1: Alt classifiers (%d)", n_i1)
     logger.info("  I2: Extended context (%d)", n_i2)
     logger.info("  I3: Backward mode (%d)", n_i3)
-    logger.info("  I4: Asymmetric optimized (%d)", n_i4)
+    logger.info("  I4: Asymmetric past-heavy (%d)", n_i4)
+    logger.info("  I5: Future-heavy (%d)", n_i5)
     logger.info("=" * 70)
 
     results = []
@@ -1873,6 +1947,94 @@ def run_group_i(cfg: dict, device: str, output_dir: Path) -> list[dict]:
                         "context_name": ctx_name, "error": str(e),
                     })
 
+    # ── I5: Future-Heavy Mode ──
+    logger.info("--- I5: Future-Heavy Mode ---")
+
+    for ch_cfg in GROUP_I5_CHANNELS:
+        ch_name = ch_cfg["name"]
+        ch_keys = ch_cfg["keys"]
+
+        try:
+            sensor_arr, train_labels, test_labels, _, timestamps = (
+                _load_sensor_data(cfg, ch_keys, split_date)
+            )
+        except Exception as e:
+            logger.error("Data load failed for %s: %s", ch_name, e)
+            skip = len(GROUP_I5_CONTEXTS) * len(GROUP_I5_CLASSIFIERS)
+            for _ in range(skip):
+                exp_idx += 1
+                results.append({"group": "I", "subgroup": "I5_future_heavy", "channels": ch_name, "error": str(e)})
+            continue
+
+        all_labels = np.where(train_labels >= 0, train_labels, test_labels)
+
+        for ctx_cfg in GROUP_I5_CONTEXTS:
+            ctx_name = ctx_cfg["name"]
+            ctx_before = ctx_cfg["before"]
+            ctx_after = ctx_cfg["after"]
+
+            try:
+                dataset, train_mask, test_mask = _build_dataset_and_split(
+                    sensor_arr, all_labels, timestamps,
+                    ctx_before, ctx_after, stride, split_date,
+                )
+            except Exception as e:
+                logger.error("Dataset failed %s|%s: %s", ch_name, ctx_name, e)
+                for clf_cfg in GROUP_I5_CLASSIFIERS:
+                    exp_idx += 1
+                    results.append({
+                        "group": "I", "subgroup": "I5_future_heavy",
+                        "channels": ch_name, "context_name": ctx_name, "error": str(e),
+                    })
+                continue
+
+            if train_mask.sum() == 0 or test_mask.sum() == 0:
+                continue
+
+            Z = extract_embeddings(model, dataset, device)
+            Z_train = Z[train_mask]
+            y_train = dataset.labels[train_mask]
+            Z_test = Z[test_mask]
+            y_test = dataset.labels[test_mask]
+
+            for clf_cfg in GROUP_I5_CLASSIFIERS:
+                clf_name = clf_cfg["name"]
+                exp_idx += 1
+                exp_label = f"I5 {ch_name} | {ctx_name} | {clf_name}"
+                t0 = time.time()
+
+                try:
+                    metrics = run_experiment(
+                        Z_train, y_train, Z_test, y_test, clf_cfg["config"], seed,
+                    )
+                    elapsed = time.time() - t0
+
+                    row = _make_result_row(
+                        group="I", subgroup="I5_future_heavy",
+                        exp_name=exp_label, ch_name=ch_name, clf_name=clf_name,
+                        layer_info=f"L{layer}", ctx_name=ctx_name,
+                        ctx_before=ctx_before, ctx_after=ctx_after,
+                        metrics=metrics, n_train=int(train_mask.sum()),
+                        n_test=int(test_mask.sum()), embed_dim=Z.shape[1],
+                        elapsed=elapsed,
+                        context_mode="future_heavy",
+                    )
+                    results.append(row)
+                    logger.info(
+                        "  [%d/%d] %s: Acc=%.4f AUC=%.4f (%.1fs)",
+                        exp_idx, n_total, exp_label,
+                        metrics.accuracy,
+                        metrics.roc_auc if not np.isnan(metrics.roc_auc) else 0.0,
+                        elapsed,
+                    )
+                except Exception as e:
+                    logger.error("  [%d/%d] %s FAILED: %s", exp_idx, n_total, exp_label, e)
+                    results.append({
+                        "group": "I", "subgroup": "I5_future_heavy",
+                        "channels": ch_name, "classifier": clf_name,
+                        "context_name": ctx_name, "error": str(e),
+                    })
+
     del model
     _cleanup_gpu()
 
@@ -1890,55 +2052,104 @@ def run_group_i(cfg: dict, device: str, output_dir: Path) -> list[dict]:
 # ============================================================================
 
 def generate_summary(all_results: list[dict], output_dir: Path):
-    """Generate combined ranking and summary report."""
+    """Generate combined ranking and summary report.
+
+    Primary ranking: AUC (threshold-independent, best for binary classification).
+    Secondary: EER (lower is better), accuracy.
+    Classifiers without predict_proba will have AUC=None → ranked at bottom.
+    """
     df = pd.DataFrame(all_results)
     if "error" in df.columns:
-        valid = df[df["error"].isna()]
+        valid = df[df["error"].isna()].copy()
     else:
-        valid = df
+        valid = df.copy()
     if "accuracy" not in valid.columns or len(valid) == 0:
         logger.warning("No valid results to summarize")
         return
 
     valid = valid.dropna(subset=["accuracy"])
 
-    # Rank by AUC (primary), then accuracy (secondary)
-    sort_cols = []
-    if "auc" in valid.columns:
-        sort_cols.append("auc")
-    sort_cols.append("accuracy")
-    ranked = valid.sort_values(sort_cols, ascending=False, na_position="last").head(30)
+    # Split into AUC-available vs AUC-unavailable
+    has_auc = valid[valid["auc"].notna()].copy() if "auc" in valid.columns else valid.iloc[:0].copy()
+    no_auc = valid[valid["auc"].isna()].copy() if "auc" in valid.columns else valid.copy()
+
+    # AUC-available: sort by AUC desc → EER asc (lower=better) → accuracy desc
+    if len(has_auc) > 0:
+        sort_keys = ["auc"]
+        ascending = [False]
+        if "eer" in has_auc.columns:
+            sort_keys.append("eer")
+            ascending.append(True)  # lower EER = better
+        sort_keys.append("accuracy")
+        ascending.append(False)
+        has_auc = has_auc.sort_values(sort_keys, ascending=ascending)
+
+    # AUC-unavailable: sort by accuracy desc
+    if len(no_auc) > 0:
+        no_auc = no_auc.sort_values("accuracy", ascending=False)
+
+    ranked = pd.concat([has_auc, no_auc], ignore_index=True).head(30)
 
     tables_dir = output_dir / "tables"
     tables_dir.mkdir(parents=True, exist_ok=True)
     ranked.to_csv(tables_dir / "top30_ranking.csv", index=False)
 
+    # Also save full sorted results
+    full_ranked = pd.concat([has_auc, no_auc], ignore_index=True)
+    full_ranked.to_csv(tables_dir / "all_results_ranked.csv", index=False)
+
     logger.info("")
     logger.info("=" * 70)
-    logger.info("TOP 30 CONFIGURATIONS:")
+    logger.info("TOP 30 CONFIGURATIONS (Primary: AUC, Secondary: EER):")
     logger.info("=" * 70)
     for i, (_, row) in enumerate(ranked.iterrows()):
         group = row.get("group", "?")
         sub = row.get("subgroup", "")
         exp = row.get("experiment", "?")
         acc = row.get("accuracy", 0)
-        auc_val = row.get("auc", 0) or 0
-        eer_val = row.get("eer", None)
+        auc_val = row.get("auc")
+        eer_val = row.get("eer")
+        f1_val = row.get("f1_macro", 0)
+        auc_str = f"AUC={auc_val:.4f}" if auc_val is not None else "AUC=N/A"
         eer_str = f" EER={eer_val:.4f}" if eer_val is not None else ""
         logger.info(
-            "  #%2d [%s/%s] %s: Acc=%.4f AUC=%.4f%s",
-            i + 1, group, sub, exp, acc, auc_val, eer_str,
+            "  #%2d [%s/%s] %s: %s%s Acc=%.4f F1m=%.4f",
+            i + 1, group, sub, exp, auc_str, eer_str, acc, f1_val,
         )
+
+    # Per-group summary
+    logger.info("")
+    logger.info("PER-GROUP BEST (by AUC):")
+    for grp in sorted(valid["group"].unique()):
+        grp_df = valid[valid["group"] == grp]
+        if "auc" in grp_df.columns and grp_df["auc"].notna().any():
+            best_idx = grp_df["auc"].idxmax()
+            best = grp_df.loc[best_idx]
+            logger.info(
+                "  %s: %s  AUC=%.4f Acc=%.4f",
+                grp, best.get("experiment", "?"), best["auc"], best["accuracy"],
+            )
+        else:
+            best = grp_df.sort_values("accuracy", ascending=False).iloc[0]
+            logger.info(
+                "  %s: %s  AUC=N/A Acc=%.4f",
+                grp, best.get("experiment", "?"), best["accuracy"],
+            )
 
     # Save summary JSON
     reports_dir = output_dir / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
+    n_with_auc = len(has_auc)
+    n_without_auc = len(no_auc)
     summary = {
         "total_experiments": len(all_results),
         "successful": len(valid),
         "failed": len(all_results) - len(valid),
+        "with_auc": n_with_auc,
+        "without_auc": n_without_auc,
         "groups_run": sorted(valid["group"].unique().tolist()) if "group" in valid.columns else [],
         "top10": ranked.head(10).to_dict("records"),
+        "metric_note": "Primary: AUC (threshold-independent), Secondary: EER (balanced error rate)",
     }
     with open(reports_dir / "phase15_summary.json", "w") as f:
         json.dump(summary, f, indent=2, default=str)
@@ -1958,7 +2169,7 @@ def load_config(config_path: str) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Phase 1.5 Exhaustive Sweep (~1,266 experiments across 6 groups)"
+        description="Phase 1.5 Exhaustive Sweep (~1,368 experiments across 6 groups)"
     )
     parser.add_argument("--config", required=True, help="YAML config path")
     parser.add_argument(
