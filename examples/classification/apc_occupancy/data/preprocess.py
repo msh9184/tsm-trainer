@@ -454,3 +454,104 @@ def load_sensor_and_labels(
     )
 
     return sensor_array, label_array, channel_names, sensor_timestamps, labeled_timestamps
+
+
+# ---------------------------------------------------------------------------
+# Public API — v2 (single events file + date-based split)
+# ---------------------------------------------------------------------------
+
+def load_occupancy_data(
+    config: PreprocessConfig,
+    split_date: str | None = None,
+) -> tuple[np.ndarray, np.ndarray, list[str], pd.DatetimeIndex]:
+    """Load sensor data with per-timestep occupancy labels from a single events file.
+
+    This is the recommended v2 API that uses a single (cleaned) events CSV
+    instead of separate train/test event files.  When ``split_date`` is
+    provided, it returns train_labels and test_labels as a second/third
+    element instead of a single label array.
+
+    Parameters
+    ----------
+    config : PreprocessConfig
+        Must have ``label_format="events"`` and ``label_csv`` pointing to
+        the cleaned events file.
+    split_date : str or None
+        If given (e.g. ``"2026-02-15"``), returns separate train/test label
+        arrays.  Train = labeled timesteps before split_date;
+        test = labeled timesteps on or after split_date.
+
+    Returns
+    -------
+    If split_date is None:
+        sensor_array, label_array, channel_names, timestamps
+
+    If split_date is given:
+        sensor_array, train_labels, test_labels, channel_names, timestamps
+    """
+    sensor_df = _load_sensor_data(config.sensor_csv)
+
+    if config.label_format != "events":
+        raise ValueError(
+            f"load_occupancy_data requires label_format='events', "
+            f"got {config.label_format!r}"
+        )
+
+    labels = _load_label_events(
+        config.label_csv, sensor_df.index,
+        initial_occupancy=config.initial_occupancy,
+        binarize=config.binarize,
+    )
+
+    # Channel filtering
+    sensor_df = _filter_channels(
+        sensor_df, config.nan_threshold, config.channels, config.exclude_channels,
+    )
+    if len(sensor_df.columns) == 0:
+        raise ValueError("No channels remaining after filtering")
+
+    # NaN handling
+    sensor_df = _fill_nan(sensor_df)
+
+    # Time features
+    if config.add_time_features:
+        sensor_df = _add_time_features(sensor_df)
+
+    sensor_array = sensor_df.values.astype(np.float32)
+    label_array = labels.values.astype(np.int64)
+    channel_names = list(sensor_df.columns)
+    timestamps = sensor_df.index
+
+    n_labeled = (label_array >= 0).sum()
+    n_occ = (label_array == 1).sum()
+    n_emp = (label_array == 0).sum()
+    logger.info(
+        "Loaded: %d sensor timesteps (%d channels), %d labeled "
+        "(occupied=%d, empty=%d)",
+        len(sensor_array), len(channel_names), n_labeled, n_occ, n_emp,
+    )
+
+    if split_date is None:
+        return sensor_array, label_array, channel_names, timestamps
+
+    # Date-based train/test split
+    split_ts = pd.Timestamp(split_date)
+    train_labels = label_array.copy()
+    test_labels = label_array.copy()
+
+    # Train: keep only labeled timesteps BEFORE split_date
+    test_mask = timestamps >= split_ts
+    train_labels[test_mask] = -1
+
+    # Test: keep only labeled timesteps ON or AFTER split_date
+    train_mask = timestamps < split_ts
+    test_labels[train_mask] = -1
+
+    n_train = (train_labels >= 0).sum()
+    n_test = (test_labels >= 0).sum()
+    logger.info(
+        "Date split at %s: train=%d labeled, test=%d labeled",
+        split_ts.strftime("%Y-%m-%d"), n_train, n_test,
+    )
+
+    return sensor_array, train_labels, test_labels, channel_names, timestamps

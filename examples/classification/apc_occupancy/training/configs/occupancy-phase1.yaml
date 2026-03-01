@@ -1,0 +1,42 @@
+# Phase 1 Comprehensive Sweep: MantisV2 Frozen Embeddings + sklearn Classifiers
+#
+# 3 parallel sweep groups (A/B/C) for optimal configuration search.
+#
+# Usage:
+#   cd examples/classification/apc_occupancy
+#
+#   # All groups (sequential, ~8-12h)
+#   python training/run_phase1_sweep.py --config training/configs/occupancy-phase1.yaml --device cuda
+#
+#   # Single group (parallel GPU servers, ~3-4h each)
+#   python training/run_phase1_sweep.py --config training/configs/occupancy-phase1.yaml --group A --device cuda
+#   python training/run_phase1_sweep.py --config training/configs/occupancy-phase1.yaml --group B --device cuda
+#   python training/run_phase1_sweep.py --config training/configs/occupancy-phase1.yaml --group C --device cuda
+
+seed: 42
+output_dir: results/phase1_sweep
+split_date: "2026-02-15"
+
+# --- Model ---
+model:
+  pretrained_name: "paris-noah/MantisV2"
+
+# --- Data ---
+# Cleaned event-based labels + 1-min interval sensor data (02/09~02/23).
+# Binary: count >= 1 = Occupied, count = 0 = Empty.
+data:
+  sensor_csv: "/group-volume/ts-dataset/AIHub/enter_leave/merged_data_with_motion_count_0209_0223_interval1.csv"
+  label_csv: "/group-volume/ts-dataset/AIHub/enter_leave/occupancy_events_0210_0219_processed_with_none_cleaned.csv"
+  label_format: "events"
+  initial_occupancy: 0
+  binarize: true
+
+# --- Defaults (used by Groups A/C) ---
+default_channels:
+  - d620900d_motionSensor
+  - 408981c2_contactSensor
+
+default_context_before: 4
+default_context_after: 4
+default_layer: 3
+stride: 1

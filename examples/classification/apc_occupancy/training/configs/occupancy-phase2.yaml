@@ -1,0 +1,49 @@
+# Phase 2 Comprehensive Sweep: MantisV2 Frozen Embeddings + Neural Classification Heads
+#
+# 3 parallel sweep groups (A/B/C) for optimal neural head configuration.
+#
+# Usage:
+#   cd examples/classification/apc_occupancy
+#
+#   # All groups (sequential, ~6-10h)
+#   python training/run_phase2_sweep.py --config training/configs/occupancy-phase2.yaml --device cuda
+#
+#   # Single group (parallel GPU servers)
+#   python training/run_phase2_sweep.py --config training/configs/occupancy-phase2.yaml --group A --device cuda
+#   python training/run_phase2_sweep.py --config training/configs/occupancy-phase2.yaml --group B --device cuda
+#   python training/run_phase2_sweep.py --config training/configs/occupancy-phase2.yaml --group C --device cuda
+
+seed: 42
+output_dir: results/phase2_sweep
+split_date: "2026-02-15"
+
+# --- Model ---
+model:
+  pretrained_name: "paris-noah/MantisV2"
+  output_token: "combined"
+
+# --- Data ---
+data:
+  sensor_csv: "/group-volume/ts-dataset/AIHub/enter_leave/merged_data_with_motion_count_0209_0223_interval1.csv"
+  label_csv: "/group-volume/ts-dataset/AIHub/enter_leave/occupancy_events_0210_0219_processed_with_none_cleaned.csv"
+  label_format: "events"
+  initial_occupancy: 0
+  binarize: true
+
+# --- Defaults (from Phase 1 best, update after Phase 1 results) ---
+default_channels:
+  - d620900d_motionSensor
+  - 408981c2_contactSensor
+
+default_context_before: 4
+default_context_after: 4
+default_layer: 3
+stride: 1
+
+# --- Training ---
+training:
+  epochs: 200
+  lr: 1.0e-3
+  weight_decay: 0.01
+  label_smoothing: 0.0
+  early_stopping_patience: 30
