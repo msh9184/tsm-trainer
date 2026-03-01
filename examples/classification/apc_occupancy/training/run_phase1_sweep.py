@@ -49,6 +49,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import torch
 
 # Headless matplotlib
 import matplotlib as mpl
@@ -129,40 +130,39 @@ TARGET_SEQ_LENS = [64, 96, 128, 192, 256, 512]
 
 def load_mantis_model(pretrained_name: str, layer: int, output_token: str, device: str):
     """Load MantisV2 model + trainer wrapper."""
-    from mantis import MantisV2, MantisTrainer
+    from mantis.architecture import MantisV2
+    from mantis.trainer import MantisTrainer
 
-    model = MantisV2.from_pretrained(pretrained_name)
-    trainer = MantisTrainer(model, return_transf_layer=layer, output_token=output_token)
-    trainer.to(device)
-    return trainer
+    if device == "cuda" and not torch.cuda.is_available():
+        device = "cpu"
+        logger.warning("CUDA not available, falling back to CPU")
+
+    network = MantisV2(
+        device=device,
+        return_transf_layer=layer,
+        output_token=output_token,
+    )
+    network = network.from_pretrained(pretrained_name)
+    model = MantisTrainer(device=device, network=network)
+    return model
 
 
-def extract_embeddings(trainer, dataset: OccupancyDataset, device: str) -> np.ndarray:
+def extract_embeddings(model, dataset: OccupancyDataset, device: str) -> np.ndarray:
     """Extract frozen embeddings for all windows in the dataset.
 
     Returns shape (n_windows, embed_dim).
     """
-    import torch
-
     X, _ = dataset.get_numpy_arrays()  # (N, C, L)
     n_samples, n_channels, seq_len = X.shape
 
+    # MantisV2 Channel Independence: extract per-channel, then concatenate
     all_embeddings = []
-    trainer.model.eval()
-    with torch.no_grad():
-        for i in range(n_samples):
-            sample = torch.from_numpy(X[i]).to(device)  # (C, L)
-            # MantisV2 expects (batch, 1, L) per channel
-            channel_embeds = []
-            for ch in range(n_channels):
-                inp = sample[ch].unsqueeze(0).unsqueeze(0)  # (1, 1, L)
-                emb = trainer.transform(inp)  # (1, D)
-                channel_embeds.append(emb.cpu().numpy())
-            # Concatenate channel embeddings
-            combined = np.concatenate(channel_embeds, axis=-1)  # (1, C*D)
-            all_embeddings.append(combined)
+    for ch in range(n_channels):
+        X_ch = X[:, [ch], :]  # (N, 1, L)
+        Z_ch = model.transform(X_ch)  # (N, D)
+        all_embeddings.append(Z_ch)
 
-    Z = np.concatenate(all_embeddings, axis=0)  # (N, C*D)
+    Z = np.concatenate(all_embeddings, axis=-1)  # (N, C*D)
 
     # NaN safety
     if np.isnan(Z).any():
