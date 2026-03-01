@@ -2048,6 +2048,183 @@ def run_group_i(cfg: dict, device: str, output_dir: Path) -> list[dict]:
 
 
 # ============================================================================
+# Visualization Generation
+# ============================================================================
+
+def generate_visualizations(all_results: list[dict], output_dir: Path):
+    """Generate sweep-level analysis plots from experiment results.
+
+    Produces:
+      1. Top-K sweep bar chart (AUC ranking)
+      2. Context performance curve (AUC/EER vs context window)
+      3. Per-classifier AUC comparison across context windows
+      4. Per-group best AUC comparison
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from visualization.curves import (
+        plot_context_performance,
+        plot_sweep_bar,
+    )
+    from visualization.style import save_figure, setup_style
+
+    df = pd.DataFrame(all_results)
+    if "error" in df.columns:
+        df = df[df["error"].isna()].copy()
+    if len(df) == 0 or "accuracy" not in df.columns:
+        logger.warning("No valid results for visualization")
+        return
+
+    plots_dir = output_dir / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- 1. Top-K AUC bar chart ---
+    try:
+        if "auc" in df.columns and df["auc"].notna().any():
+            fig = plot_sweep_bar(
+                df, group_col="experiment", metric_col="auc",
+                hue_col="classifier", title="Phase 1.5 — Top 30 by AUC",
+                top_k=30, output_path=plots_dir / "sweep_top30_auc",
+            )
+            plt.close(fig)
+            logger.info("Saved: %s", plots_dir / "sweep_top30_auc.png")
+    except Exception:
+        logger.warning("Failed to plot sweep AUC bar chart", exc_info=True)
+
+    # --- 2. Context performance curve (bidirectional symmetric only) ---
+    try:
+        bidir = df[
+            (df["context_before"] == df["context_after"])
+            & df["auc"].notna()
+        ].copy()
+        if len(bidir) > 0:
+            bidir["total_ctx"] = bidir["context_before"] * 2 + 1
+            # Per-classifier groups
+            clf_groups = {}
+            for clf_name in bidir["classifier"].unique():
+                clf_df = bidir[bidir["classifier"] == clf_name]
+                # Average AUC per context window per classifier
+                avg = clf_df.groupby("total_ctx")["auc"].mean().sort_index()
+                clf_groups[clf_name] = (avg.index.tolist(), avg.values.tolist())
+
+            # Also gather EER (average across classifiers)
+            eer_avg = bidir.groupby("total_ctx")["eer"].mean().sort_index()
+            ctx_list = eer_avg.index.tolist()
+            eer_list = eer_avg.values.tolist()
+
+            fig = plot_context_performance(
+                context_mins=ctx_list,
+                auc_values=None,
+                eer_values=eer_list,
+                classifier_groups=clf_groups,
+                output_path=plots_dir / "context_performance",
+            )
+            plt.close(fig)
+            logger.info("Saved: %s", plots_dir / "context_performance.png")
+    except Exception:
+        logger.warning("Failed to plot context performance curve", exc_info=True)
+
+    # --- 3. Per-group best AUC comparison ---
+    try:
+        if "group" in df.columns and "auc" in df.columns:
+            setup_style()
+            groups = sorted(df["group"].unique())
+            best_aucs = []
+            best_labels = []
+            for grp in groups:
+                grp_df = df[df["group"] == grp]
+                if grp_df["auc"].notna().any():
+                    best_idx = grp_df["auc"].idxmax()
+                    best_aucs.append(grp_df.loc[best_idx, "auc"])
+                    best_labels.append(f"Group {grp}")
+                else:
+                    best_aucs.append(0)
+                    best_labels.append(f"Group {grp} (no AUC)")
+
+            fig, ax = plt.subplots(figsize=(8, 4))
+            colors = ["#0173B2", "#DE8F05", "#029E73", "#CC3311", "#9467BD", "#8C564B"]
+            bars = ax.bar(
+                best_labels, best_aucs,
+                color=[colors[i % len(colors)] for i in range(len(groups))],
+                edgecolor="white", linewidth=0.5,
+            )
+            for bar, val in zip(bars, best_aucs):
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2, val + 0.003,
+                    f"{val:.4f}", ha="center", va="bottom", fontsize=9,
+                )
+            ax.set_ylabel("AUC")
+            ax.set_title("Best AUC per Group")
+            ax.set_ylim(0.5, 1.0)
+            ax.grid(axis="y", alpha=0.3)
+            save_figure(fig, plots_dir / "group_best_auc")
+            plt.close(fig)
+            logger.info("Saved: %s", plots_dir / "group_best_auc.png")
+    except Exception:
+        logger.warning("Failed to plot per-group AUC comparison", exc_info=True)
+
+    # --- 4. Classifier comparison (aggregated) ---
+    try:
+        if "classifier" in df.columns and "auc" in df.columns:
+            setup_style()
+            clf_auc = df.groupby("classifier")["auc"].agg(["mean", "std", "max", "count"])
+            clf_auc = clf_auc.sort_values("mean", ascending=False)
+
+            fig, ax = plt.subplots(figsize=(8, max(3, 0.4 * len(clf_auc))))
+            y_pos = np.arange(len(clf_auc))
+            ax.barh(
+                y_pos, clf_auc["mean"],
+                xerr=clf_auc["std"], height=0.6,
+                color="#0173B2", alpha=0.8, edgecolor="white",
+                capsize=3,
+            )
+            for i, (mean, mx) in enumerate(zip(clf_auc["mean"], clf_auc["max"])):
+                ax.text(mean + 0.005, i, f"μ={mean:.4f} max={mx:.4f}", va="center", fontsize=8)
+            ax.set_yticks(y_pos)
+            ax.set_yticklabels(clf_auc.index, fontsize=9)
+            ax.invert_yaxis()
+            ax.set_xlabel("AUC (mean ± std)")
+            ax.set_title("Classifier Comparison (all experiments)")
+            save_figure(fig, plots_dir / "classifier_comparison")
+            plt.close(fig)
+            logger.info("Saved: %s", plots_dir / "classifier_comparison.png")
+    except Exception:
+        logger.warning("Failed to plot classifier comparison", exc_info=True)
+
+    # --- 5. Channel combination comparison ---
+    try:
+        if "channels" in df.columns and "auc" in df.columns:
+            setup_style()
+            ch_auc = df.groupby("channels")["auc"].agg(["mean", "std", "max"])
+            ch_auc = ch_auc.sort_values("mean", ascending=False).head(15)
+
+            fig, ax = plt.subplots(figsize=(8, max(3, 0.35 * len(ch_auc))))
+            y_pos = np.arange(len(ch_auc))
+            ax.barh(
+                y_pos, ch_auc["mean"],
+                xerr=ch_auc["std"], height=0.6,
+                color="#029E73", alpha=0.8, edgecolor="white",
+                capsize=3,
+            )
+            for i, (mean, mx) in enumerate(zip(ch_auc["mean"], ch_auc["max"])):
+                ax.text(mean + 0.005, i, f"μ={mean:.4f} max={mx:.4f}", va="center", fontsize=8)
+            ax.set_yticks(y_pos)
+            ax.set_yticklabels(ch_auc.index, fontsize=8)
+            ax.invert_yaxis()
+            ax.set_xlabel("AUC (mean ± std)")
+            ax.set_title("Channel Combination Comparison (Top 15)")
+            save_figure(fig, plots_dir / "channel_comparison")
+            plt.close(fig)
+            logger.info("Saved: %s", plots_dir / "channel_comparison.png")
+    except Exception:
+        logger.warning("Failed to plot channel comparison", exc_info=True)
+
+    logger.info("Visualization complete. Plots saved to: %s", plots_dir)
+
+
+# ============================================================================
 # Summary + Ranking
 # ============================================================================
 
@@ -2229,6 +2406,7 @@ def main():
     runner = GROUP_RUNNERS[group]
     results = runner(cfg, device, output_dir)
     generate_summary(results, output_dir)
+    generate_visualizations(results, output_dir)
 
     total_time = time.time() - t_start
     logger.info("")

@@ -67,20 +67,28 @@ class ClassificationMetrics:
     n_folds: int | None = None
 
     def summary(self) -> str:
-        """Return a formatted summary string."""
+        """Return a formatted summary string.
+
+        Display order: threshold-independent metrics FIRST (AUC, EER),
+        then threshold-dependent metrics (accuracy, F1, precision, recall).
+        """
         lines = [
             "Classification Results",
             "=" * 50,
+        ]
+        # Primary: threshold-independent metrics
+        if not math.isnan(self.roc_auc):
+            lines.append(f"  AUC:           {self.roc_auc:.4f}")
+        if not math.isnan(self.eer):
+            lines.append(f"  EER:           {self.eer:.4f} (threshold={self.eer_threshold:.4f})")
+        # Secondary: threshold-dependent metrics
+        lines.extend([
             f"  Accuracy:      {self.accuracy:.4f}",
             f"  F1 (binary):   {self.f1:.4f}",
             f"  F1 (macro):    {self.f1_macro:.4f}",
             f"  Precision:     {self.precision:.4f}",
             f"  Recall:        {self.recall:.4f}",
-        ]
-        if not math.isnan(self.eer):
-            lines.append(f"  EER:           {self.eer:.4f} (threshold={self.eer_threshold:.4f})")
-        if not math.isnan(self.roc_auc):
-            lines.append(f"  AUC:           {self.roc_auc:.4f}")
+        ])
         if self.ci_lower is not None:
             lines.append(f"  Wilson CI:     [{self.ci_lower:.4f}, {self.ci_upper:.4f}]")
 

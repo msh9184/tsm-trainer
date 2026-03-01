@@ -695,30 +695,156 @@ def run_group_c(cfg: dict, device: str, output_dir: Path) -> list[dict]:
 
 
 # ============================================================================
+# Visualization Generation
+# ============================================================================
+
+def generate_visualizations(all_results: list[dict], output_dir: Path):
+    """Generate sweep-level analysis plots from Phase 1 experiment results.
+
+    Produces: Top-K bar chart, context performance curve, classifier comparison.
+    """
+    from visualization.curves import plot_context_performance, plot_sweep_bar
+    from visualization.style import save_figure, setup_style
+
+    df = pd.DataFrame(all_results)
+    if "error" in df.columns:
+        df = df[df["error"].isna()].copy()
+    if len(df) == 0 or "accuracy" not in df.columns:
+        logger.warning("No valid results for visualization")
+        return
+
+    plots_dir = output_dir / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- 1. Top-K AUC bar chart ---
+    try:
+        if "auc" in df.columns and df["auc"].notna().any():
+            fig = plot_sweep_bar(
+                df, group_col="experiment", metric_col="auc",
+                hue_col="classifier", title="Phase 1 — Top 20 by AUC",
+                top_k=20, output_path=plots_dir / "sweep_top20_auc",
+            )
+            plt.close(fig)
+            logger.info("Saved: %s", plots_dir / "sweep_top20_auc.png")
+    except Exception:
+        logger.warning("Failed to plot sweep AUC bar chart", exc_info=True)
+
+    # --- 2. Context performance curve ---
+    try:
+        bidir = df[
+            df["context"].str.contains("bidir", case=False, na=False)
+            & df["auc"].notna()
+        ].copy() if "context" in df.columns else df.iloc[:0].copy()
+
+        if len(bidir) > 0 and "total_context_min" in bidir.columns:
+            clf_groups = {}
+            for clf_name in bidir["classifier"].unique():
+                clf_df = bidir[bidir["classifier"] == clf_name]
+                avg = clf_df.groupby("total_context_min")["auc"].mean().sort_index()
+                clf_groups[clf_name] = (avg.index.tolist(), avg.values.tolist())
+
+            eer_avg = bidir.groupby("total_context_min")["eer"].mean().sort_index()
+
+            fig = plot_context_performance(
+                context_mins=eer_avg.index.tolist(),
+                auc_values=None,
+                eer_values=eer_avg.values.tolist(),
+                classifier_groups=clf_groups,
+                output_path=plots_dir / "context_performance",
+            )
+            plt.close(fig)
+            logger.info("Saved: %s", plots_dir / "context_performance.png")
+    except Exception:
+        logger.warning("Failed to plot context performance curve", exc_info=True)
+
+    # --- 3. Per-group best AUC ---
+    try:
+        if "group" in df.columns and "auc" in df.columns:
+            setup_style()
+            groups = sorted(df["group"].unique())
+            best_aucs = []
+            best_labels = []
+            for grp in groups:
+                grp_df = df[df["group"] == grp]
+                if grp_df["auc"].notna().any():
+                    best_aucs.append(grp_df["auc"].max())
+                    best_labels.append(f"Group {grp}")
+                else:
+                    best_aucs.append(0)
+                    best_labels.append(f"Group {grp} (no AUC)")
+
+            fig, ax = plt.subplots(figsize=(6, 4))
+            colors = ["#0173B2", "#DE8F05", "#029E73"]
+            bars = ax.bar(best_labels, best_aucs,
+                          color=[colors[i % len(colors)] for i in range(len(groups))],
+                          edgecolor="white")
+            for bar, val in zip(bars, best_aucs):
+                ax.text(bar.get_x() + bar.get_width() / 2, val + 0.003,
+                        f"{val:.4f}", ha="center", va="bottom", fontsize=9)
+            ax.set_ylabel("AUC")
+            ax.set_title("Best AUC per Group — Phase 1")
+            ax.set_ylim(0.5, 1.0)
+            ax.grid(axis="y", alpha=0.3)
+            save_figure(fig, plots_dir / "group_best_auc")
+            plt.close(fig)
+            logger.info("Saved: %s", plots_dir / "group_best_auc.png")
+    except Exception:
+        logger.warning("Failed to plot per-group AUC comparison", exc_info=True)
+
+    logger.info("Visualization complete. Plots saved to: %s", plots_dir)
+
+
+# ============================================================================
 # Summary + Ranking
 # ============================================================================
 
 def generate_summary(all_results: list[dict], output_dir: Path):
-    """Generate combined ranking and summary report."""
+    """Generate combined ranking and summary report.
+
+    Primary ranking: AUC (threshold-independent, best for binary classification).
+    Secondary: EER (lower is better), then accuracy.
+    """
     df = pd.DataFrame(all_results)
     if "error" in df.columns:
-        valid = df[df["error"].isna()]
+        valid = df[df["error"].isna()].copy()
     else:
-        valid = df
+        valid = df.copy()
     if "accuracy" not in valid.columns or len(valid) == 0:
         logger.warning("No valid results to summarize")
         return
 
     valid = valid.dropna(subset=["accuracy"])
-    ranked = valid.sort_values("accuracy", ascending=False).head(20)
+
+    # Split: AUC-available vs AUC-unavailable
+    has_auc = valid[valid["auc"].notna()].copy() if "auc" in valid.columns else valid.iloc[:0].copy()
+    no_auc = valid[valid["auc"].isna()].copy() if "auc" in valid.columns else valid.copy()
+
+    if len(has_auc) > 0:
+        sort_keys = ["auc"]
+        ascending = [False]
+        if "eer" in has_auc.columns:
+            sort_keys.append("eer")
+            ascending.append(True)
+        sort_keys.append("accuracy")
+        ascending.append(False)
+        has_auc = has_auc.sort_values(sort_keys, ascending=ascending)
+
+    if len(no_auc) > 0:
+        no_auc = no_auc.sort_values("accuracy", ascending=False)
+
+    ranked = pd.concat([has_auc, no_auc], ignore_index=True).head(20)
 
     tables_dir = output_dir / "tables"
     tables_dir.mkdir(parents=True, exist_ok=True)
     ranked.to_csv(tables_dir / "top20_ranking.csv", index=False)
 
+    # Save full ranked results
+    full_ranked = pd.concat([has_auc, no_auc], ignore_index=True)
+    full_ranked.to_csv(tables_dir / "all_results_ranked.csv", index=False)
+
     logger.info("")
     logger.info("=" * 70)
-    logger.info("TOP 20 CONFIGURATIONS:")
+    logger.info("TOP 20 CONFIGURATIONS (Primary: AUC, Secondary: EER):")
     logger.info("=" * 70)
     for i, (_, row) in enumerate(ranked.iterrows()):
         group = row.get("group", "?")
@@ -728,11 +854,13 @@ def generate_summary(all_results: list[dict], output_dir: Path):
         clf = row.get("classifier", "?")
         token = row.get("output_token", "?")
         acc = row.get("accuracy", 0)
-        f1_val = row.get("f1", 0)
-        auc_val = row.get("auc", 0) or 0
+        auc_val = row.get("auc")
+        eer_val = row.get("eer")
+        auc_str = f"AUC={auc_val:.4f}" if auc_val is not None else "AUC=N/A"
+        eer_str = f" EER={eer_val:.4f}" if eer_val is not None else ""
         logger.info(
-            "  #%2d [%s] %s | L%s | %s | %s | %s: Acc=%.4f F1=%.4f AUC=%.4f",
-            i + 1, group, ctx, layer, ch, clf, token, acc, f1_val, auc_val,
+            "  #%2d [%s] %s | L%s | %s | %s | %s: %s%s Acc=%.4f",
+            i + 1, group, ctx, layer, ch, clf, token, auc_str, eer_str, acc,
         )
 
     # Save summary JSON
@@ -742,7 +870,10 @@ def generate_summary(all_results: list[dict], output_dir: Path):
         "total_experiments": len(all_results),
         "successful": len(valid),
         "failed": len(all_results) - len(valid),
+        "with_auc": len(has_auc),
+        "without_auc": len(no_auc),
         "top5": ranked.head(5).to_dict("records"),
+        "metric_note": "Primary: AUC (threshold-independent), Secondary: EER",
     }
     with open(reports_dir / "phase1_summary.json", "w") as f:
         json.dump(summary, f, indent=2, default=str)
@@ -810,6 +941,7 @@ def main():
         all_results.extend(results)
 
     generate_summary(all_results, output_dir)
+    generate_visualizations(all_results, output_dir)
 
     total_time = time.time() - t_start
     logger.info("")
