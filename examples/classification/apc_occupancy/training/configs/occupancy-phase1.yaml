@@ -25,7 +25,7 @@ model:
 # Cleaned event-based labels + 1-min interval sensor data (02/09~02/23).
 # Binary: count >= 1 = Occupied, count = 0 = Empty.
 data:
-  sensor_csv: "/group-volume/ts-dataset/AIHub/enter_leave/merged_data_with_motion_count_0209_0223_interval1.csv"
+  sensor_csv: "/group-volume/ts-dataset/AIHub/enter_leave/merged_processed_data_with_motion_count_0209_0223_interval1.csv"
   label_csv: "/group-volume/ts-dataset/AIHub/enter_leave/occupancy_events_0210_0219_processed_with_none_cleaned.csv"
   label_format: "events"
   initial_occupancy: 0
