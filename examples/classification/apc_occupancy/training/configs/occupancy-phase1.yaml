@@ -5,9 +5,12 @@
 #   - Layer choice is negligible (±0.01 AUC across L0-L5)
 #   - MantisV2 only supports output_token="combined" (cls/mean fail)
 #
-# CRITICAL FIX: Uses separate train/test event files (P4-style) instead of
-#   split_date. The old split_date="2026-02-15" created ~50:50 split instead
-#   of the intended ~75:25 ratio from the curated event files.
+# CRITICAL FIX v2: Uses separate train/test sensor + event files.
+#   v1 had split_date="2026-02-15" creating ~50:50 split.
+#   v2 uses pre-split sensor CSVs (at midnight Feb 17) + separate event CSVs,
+#   ensuring physical train/test separation with no data leakage at sensor level.
+#   Train/test event ratio: ~79.5:20.5 (62:16 events).
+#   Sensor split: 10119:9072 rows (52.73:47.27), exactly 5x proportional to 5-min.
 #
 # 3 parallel sweep groups (A/B/C) for optimal configuration search.
 #
@@ -29,12 +32,16 @@ output_dir: results/phase1_sweep
 model:
   pretrained_name: "paris-noah/MantisV2"
 
-# --- Data (P4-style: separate train/test event files) ---
-# 1-min interval sensor data (02/09~02/23) + curated event-based labels (02/10~02/19).
+# --- Data (physically separated train/test) ---
+# Pre-split 1-min sensor CSVs at midnight Feb 17 + curated event CSVs.
 # Binary: count >= 1 = Occupied, count = 0 = Empty.
-# Train/test split follows the original ~75:25 curated event files.
+# Train sensor: Feb 9 23:22 ~ Feb 16 23:59 (10119 rows)
+# Test sensor:  Feb 17 00:00 ~ Feb 23 07:11 (9072 rows)
+# Train events: Feb 10 07:37 ~ Feb 16 07:10 (62 events, ~79.5%)
+# Test events:  Feb 17 14:19 ~ Feb 19 10:16 (16 events, ~20.5%)
 data:
-  sensor_csv: "/group-volume/ts-dataset/AIHub/enter_leave/merged_processed_data_with_motion_count_0209_0223_interval1.csv"
+  train_sensor_csv: "/group-volume/ts-dataset/AIHub/enter_leave/merged_processed_data_with_motion_count_0209_0223_interval1_train.csv"
+  test_sensor_csv: "/group-volume/ts-dataset/AIHub/enter_leave/merged_processed_data_with_motion_count_0209_0223_interval1_test.csv"
   train_label_csv: "/group-volume/ts-dataset/AIHub/enter_leave/occupancy_events_0210_0219_processed_train.csv"
   test_label_csv: "/group-volume/ts-dataset/AIHub/enter_leave/occupancy_events_0210_0219_processed_test.csv"
   label_format: "events"

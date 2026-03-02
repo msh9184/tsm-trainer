@@ -3,7 +3,8 @@
 
 Generates publication-quality t-SNE figures analyzing MantisV2 embeddings
 for the binary occupancy (Empty/Occupied) classification task.
-Uses P4-style separate train/test event files (~75:25 curated ratio).
+Uses physically separated train/test sensor + event CSVs (split at midnight
+Feb 17). No data leakage at sensor level.
 
 Representative model:
     MantisV2 L2, M+C+T1 (3 channels, 1536-d), 120+1+120 bidirectional.
@@ -160,17 +161,19 @@ def load_config(path: str | Path) -> dict:
 
 
 def load_data(raw_cfg: dict, channels: list[str] | None = None):
-    """Load sensor + labels with P4-style train/test split.
+    """Load sensor + labels from physically separated train/test CSVs.
 
-    Uses separate train/test event files for the curated ~75:25 ratio.
+    Uses separate train/test sensor CSVs (split at midnight Feb 17) plus
+    separate event CSVs for the curated ~75:25 ratio.  Zero data leakage
+    at sensor level — each split is self-contained.
 
-    Returns (sensor_array, train_labels, test_labels, channel_names, timestamps).
+    Returns (train_sensor, train_labels, train_ts,
+             test_sensor, test_labels, test_ts, channel_names).
     """
     data_cfg = raw_cfg.get("data", {})
     ch = channels or raw_cfg.get("default_channels") or data_cfg.get("channels")
 
-    base_kwargs = dict(
-        sensor_csv=data_cfg.get("sensor_csv", ""),
+    common_kwargs = dict(
         label_format=data_cfg.get("label_format", "events"),
         initial_occupancy=data_cfg.get("initial_occupancy", 0),
         nan_threshold=data_cfg.get("nan_threshold", 0.5),
@@ -179,33 +182,33 @@ def load_data(raw_cfg: dict, channels: list[str] | None = None):
         add_time_features=data_cfg.get("add_time_features", False),
     )
 
-    # Load sensor + train labels
+    # Load train sensor + train labels
     train_prep = PreprocessConfig(
-        label_csv=data_cfg.get("train_label_csv", ""),
+        sensor_csv=data_cfg["train_sensor_csv"],
+        label_csv=data_cfg["train_label_csv"],
         channels=ch,
-        **base_kwargs,
+        **common_kwargs,
     )
-    sensor_arr, train_labels, ch_names, timestamps, _ = load_sensor_and_labels(train_prep)
+    train_sensor, train_labels, ch_names, train_ts, _ = load_sensor_and_labels(train_prep)
 
-    # Load test labels (same sensor, different events)
+    # Load test sensor + test labels (physically separate CSV)
     test_prep = PreprocessConfig(
-        label_csv=data_cfg.get("test_label_csv", ""),
+        sensor_csv=data_cfg["test_sensor_csv"],
+        label_csv=data_cfg["test_label_csv"],
         channels=ch,
-        **base_kwargs,
+        **common_kwargs,
     )
-    _, test_labels, _, _, _ = load_sensor_and_labels(test_prep)
-
-    # Resolve overlap: train takes priority
-    overlap = (train_labels >= 0) & (test_labels >= 0)
-    if overlap.sum() > 0:
-        logger.warning("Resolving %d overlapping timesteps (train priority)", overlap.sum())
-        test_labels[overlap] = -1
+    test_sensor, test_labels, _, test_ts, _ = load_sensor_and_labels(test_prep)
 
     n_train = (train_labels >= 0).sum()
     n_test = (test_labels >= 0).sum()
-    logger.info("P4 split: train=%d, test=%d labeled", n_train, n_test)
+    logger.info(
+        "Separate sensor CSVs: train=%d rows (%d labeled), "
+        "test=%d rows (%d labeled)",
+        len(train_labels), n_train, len(test_labels), n_test,
+    )
 
-    return sensor_arr, train_labels, test_labels, ch_names, timestamps
+    return train_sensor, train_labels, train_ts, test_sensor, test_labels, test_ts, ch_names
 
 
 def load_mantis(pretrained: str, layer: int, output_token: str, device: str):
@@ -650,7 +653,7 @@ def fig4_uncertainty_analysis(emb_te, y_te, prob_svm, prob_mlp,
 # ============================================================================
 
 def fig5_layer_ablation(pretrained, output_token, device,
-                        sensor_arr, test_labels, timestamps, ch_names,
+                        test_sensor, test_labels, test_ts, ch_names,
                         ctx_before, ctx_after, seed, output_dir: Path):
     """2x3 grid: t-SNE from each transformer layer L0-L5 (test set).
 
@@ -668,7 +671,7 @@ def fig5_layer_ablation(pretrained, output_token, device,
         model = load_mantis(pretrained, layer=layer,
                             output_token=output_token, device=device)
         Z_te, y_te = extract_embeddings(
-            model, sensor_arr, test_labels, timestamps, ch_names,
+            model, test_sensor, test_labels, test_ts, ch_names,
             ctx_before=ctx_before, ctx_after=ctx_after)
         del model; gc.collect()
         if torch.cuda.is_available():
@@ -715,7 +718,7 @@ def fig5_layer_ablation(pretrained, output_token, device,
 # Figure 6: Context Window Ablation (2x3 grid)
 # ============================================================================
 
-def fig6_context_ablation(model, sensor_arr, test_labels, timestamps,
+def fig6_context_ablation(model, test_sensor, test_labels, test_ts,
                            ch_names, seed, output_dir: Path):
     """2x3 grid: t-SNE with varying context windows (test set).
 
@@ -737,7 +740,7 @@ def fig6_context_ablation(model, sensor_arr, test_labels, timestamps,
         ax = axes[i // 3, i % 3]
         logger.info("  Fig6 context %s: extracting...", label)
         Z_te, y_te = extract_embeddings(
-            model, sensor_arr, test_labels, timestamps, ch_names,
+            model, test_sensor, test_labels, test_ts, ch_names,
             ctx_before=cb, ctx_after=ca)
 
         if len(Z_te) == 0:
@@ -807,12 +810,12 @@ def fig7_channel_ablation(raw_cfg, pretrained, output_token, device,
 
         try:
             result = load_data(raw_cfg, channels=channels)
-            sensor_arr, _, test_labels, ch_names, timestamps = result
+            _, _, _, te_sensor, te_labels, te_ts, ch_names = result
 
             model = load_mantis(pretrained, layer=default_layer,
                                 output_token=output_token, device=device)
             Z_te, y_te = extract_embeddings(
-                model, sensor_arr, test_labels, timestamps, ch_names,
+                model, te_sensor, te_labels, te_ts, ch_names,
                 ctx_before=ctx_before, ctx_after=ctx_after)
             del model; gc.collect()
             if torch.cuda.is_available():
@@ -910,10 +913,10 @@ def main():
     model = load_mantis(pretrained, layer=default_layer,
                         output_token=output_token, device=device)
 
-    # ==== Load data (P4-style split) ====
-    logger.info("Loading data with M+C+T1 channels (P4-style split)...")
+    # ==== Load data (physically separated train/test sensor CSVs) ====
+    logger.info("Loading data with M+C+T1 channels (separate sensor CSVs)...")
     result = load_data(raw_cfg, channels=CHANNELS_MCT1)
-    sensor_arr, train_labels, test_labels, ch_names, timestamps = result
+    train_sensor, train_labels, train_ts, test_sensor, test_labels, test_ts, ch_names = result
     logger.info("Channels: %s", ch_names)
 
     # ==== Extract embeddings ====
@@ -922,11 +925,11 @@ def main():
                  default_layer, ctx_before, ctx_after)
 
     Z_train, y_train = extract_embeddings(
-        model, sensor_arr, train_labels, timestamps, ch_names,
+        model, train_sensor, train_labels, train_ts, ch_names,
         ctx_before=ctx_before, ctx_after=ctx_after,
     )
     Z_test, y_test = extract_embeddings(
-        model, sensor_arr, test_labels, timestamps, ch_names,
+        model, test_sensor, test_labels, test_ts, ch_names,
         ctx_before=ctx_before, ctx_after=ctx_after,
     )
     embed_dim = Z_train.shape[1]
@@ -996,14 +999,14 @@ def main():
         logger.info("=" * 60)
         logger.info("Fig 5: Layer ablation (L0-L5)...")
         fig5_layer_ablation(pretrained, output_token, device,
-                            sensor_arr, test_labels, timestamps, ch_names,
+                            test_sensor, test_labels, test_ts, ch_names,
                             ctx_before, ctx_after, args.seed, output_dir)
 
     # ==== Fig 6: Context window ablation ====
     if 6 in figs_to_run:
         logger.info("=" * 60)
         logger.info("Fig 6: Context window ablation...")
-        fig6_context_ablation(model, sensor_arr, test_labels, timestamps,
+        fig6_context_ablation(model, test_sensor, test_labels, test_ts,
                                ch_names, args.seed, output_dir)
 
     # ==== Fig 7: Channel ablation ====

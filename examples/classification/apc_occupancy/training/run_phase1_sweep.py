@@ -6,9 +6,9 @@ Findings from initial round: context window is the dominant factor
 (AUC scales from 0.56 at 1min to 0.84 at 241min, no saturation).
 Layer choice is negligible (±0.01 AUC range at any given context).
 
-CRITICAL: Uses P4-style separate train/test event files to maintain
-the curated ~75:25 train/test ratio. The old split_date approach
-created ~50:50 split, invalidating all previous results.
+CRITICAL v2: Uses physically separated train/test sensor + event CSVs.
+Sensor data split at midnight Feb 17. Event ratio ~79.5:20.5 (62:16).
+No data leakage at sensor level — each OccupancyDataset is self-contained.
 
 Three sweep groups (run independently on separate GPUs):
 
@@ -199,84 +199,79 @@ GROUP_C_CONTEXTS = [
 
 
 # ============================================================================
-# Data loading — P4-style (separate train/test event files)
+# Data loading — physically separated train/test sensor + event CSVs
 # ============================================================================
 
-def load_train_test_data(
+@dataclass
+class SplitData:
+    """Container for train/test data loaded from separate sensor CSVs."""
+    train_sensor: np.ndarray    # (n_train_ts, n_channels)
+    train_labels: np.ndarray    # (n_train_ts,)
+    train_ts: pd.DatetimeIndex
+    test_sensor: np.ndarray     # (n_test_ts, n_channels)
+    test_labels: np.ndarray     # (n_test_ts,)
+    test_ts: pd.DatetimeIndex
+    ch_names: list[str]
+
+
+def load_split_data(
     cfg: dict,
     channels: list[str] | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, list[str], pd.DatetimeIndex]:
-    """Load sensor data with separate train/test labels (P4-style).
+) -> SplitData:
+    """Load physically separated train/test sensor data + event labels.
 
-    Uses two separate event CSV files for train and test splits,
-    maintaining the curated ~75:25 ratio.
+    Each sensor CSV is loaded independently with its corresponding event
+    CSV, ensuring zero data leakage at the sensor level.
 
-    Returns
-    -------
-    sensor_arr : shape (n_timesteps, n_channels)
-    all_labels : shape (n_timesteps,) — merged (train + test, -1 = unlabeled)
-    train_labels : shape (n_timesteps,) — train only (-1 elsewhere)
-    test_labels : shape (n_timesteps,) — test only (-1 elsewhere)
-    ch_names : channel name list
-    timestamps : DatetimeIndex
+    Returns SplitData with train and test arrays fully independent.
     """
     data_cfg = cfg["data"]
     ch = channels or cfg.get("default_channels")
 
-    base_kwargs = dict(
-        sensor_csv=data_cfg["sensor_csv"],
+    common_kwargs = dict(
         label_format=data_cfg.get("label_format", "events"),
         initial_occupancy=data_cfg.get("initial_occupancy", 0),
         binarize=data_cfg.get("binarize", True),
         channels=ch,
     )
 
-    # Load sensor + train labels
-    train_prep = PreprocessConfig(label_csv=data_cfg["train_label_csv"], **base_kwargs)
-    sensor_arr, train_labels, ch_names, timestamps, _ = load_sensor_and_labels(train_prep)
-
-    # Load test labels (same sensor CSV, different events)
-    test_prep = PreprocessConfig(label_csv=data_cfg["test_label_csv"], **base_kwargs)
-    _, test_labels, _, _, _ = load_sensor_and_labels(test_prep)
-
-    # Resolve overlap: train takes priority
-    overlap = (train_labels >= 0) & (test_labels >= 0)
-    if overlap.sum() > 0:
-        logger.warning(
-            "Resolving %d overlapping timesteps (train takes priority)",
-            overlap.sum(),
-        )
-        test_labels[overlap] = -1
-
-    # Merge for dataset construction
-    all_labels = np.where(train_labels >= 0, train_labels, test_labels)
-
-    n_train = (train_labels >= 0).sum()
-    n_test = (test_labels >= 0).sum()
-    n_total = (all_labels >= 0).sum()
-    logger.info(
-        "P4-style split: train=%d, test=%d, total=%d labeled (%.1f:%.1f ratio)",
-        n_train, n_test, n_total,
-        100 * n_train / max(n_total, 1), 100 * n_test / max(n_total, 1),
+    # Load train: separate sensor CSV + train event CSV
+    train_prep = PreprocessConfig(
+        sensor_csv=data_cfg["train_sensor_csv"],
+        label_csv=data_cfg["train_label_csv"],
+        **common_kwargs,
+    )
+    train_sensor, train_labels, ch_names, train_ts, train_labeled_ts = (
+        load_sensor_and_labels(train_prep)
     )
 
-    return sensor_arr, all_labels, train_labels, test_labels, ch_names, timestamps
+    # Load test: separate sensor CSV + test event CSV
+    test_prep = PreprocessConfig(
+        sensor_csv=data_cfg["test_sensor_csv"],
+        label_csv=data_cfg["test_label_csv"],
+        **common_kwargs,
+    )
+    test_sensor, test_labels, _, test_ts, test_labeled_ts = (
+        load_sensor_and_labels(test_prep)
+    )
 
+    n_train_labeled = (train_labels >= 0).sum()
+    n_test_labeled = (test_labels >= 0).sum()
+    total_labeled = n_train_labeled + n_test_labeled
+    logger.info(
+        "Split data loaded: train=%d sensor rows (%d labeled), "
+        "test=%d sensor rows (%d labeled), ratio=%.1f:%.1f",
+        len(train_sensor), n_train_labeled,
+        len(test_sensor), n_test_labeled,
+        100 * n_train_labeled / max(total_labeled, 1),
+        100 * n_test_labeled / max(total_labeled, 1),
+    )
 
-def get_label_masks(
-    dataset: OccupancyDataset,
-    train_labels: np.ndarray,
-    test_labels: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Compute train/test boolean masks from label arrays.
-
-    Uses the dataset's valid_indices to determine which windows
-    belong to train vs test based on the original label arrays.
-    """
-    valid_idx = dataset._valid_indices
-    train_mask = train_labels[valid_idx] >= 0
-    test_mask = test_labels[valid_idx] >= 0
-    return train_mask, test_mask
+    return SplitData(
+        train_sensor=train_sensor, train_labels=train_labels, train_ts=train_ts,
+        test_sensor=test_sensor, test_labels=test_labels, test_ts=test_ts,
+        ch_names=ch_names,
+    )
 
 
 # ============================================================================
@@ -400,6 +395,7 @@ def run_group_a(cfg: dict, device: str, output_dir: Path) -> list[dict]:
 
     21 symmetric + 10 backward + 16 asym-past + 4 asym-future = 51 configs.
     Fixed: L2 (best layer from initial round), RF, M+C, combined token.
+    Uses physically separated train/test sensor CSVs (no data leakage).
     """
     n_total = len(ALL_CONTEXT_CONFIGS)
     logger.info("=" * 70)
@@ -412,10 +408,8 @@ def run_group_a(cfg: dict, device: str, output_dir: Path) -> list[dict]:
     seed = cfg.get("seed", 42)
     default_layer = cfg.get("default_layer", 2)
 
-    # Load sensor data with P4-style train/test split (shared across all context configs)
-    sensor_arr, all_labels, train_labels, test_labels, ch_names, timestamps = (
-        load_train_test_data(cfg, channels=default_channels)
-    )
+    # Load physically separated train/test data
+    split = load_split_data(cfg, channels=default_channels)
 
     for i, ctx_cfg in enumerate(ALL_CONTEXT_CONFIGS, 1):
         ctx_name = ctx_cfg["name"]
@@ -432,21 +426,16 @@ def run_group_a(cfg: dict, device: str, output_dir: Path) -> list[dict]:
                 context_after=ctx_after,
                 stride=cfg.get("stride", 1),
             )
-            dataset = OccupancyDataset(sensor_arr, all_labels, timestamps, ds_config)
-            train_mask, test_mask = get_label_masks(dataset, train_labels, test_labels)
-
-            if train_mask.sum() == 0 or test_mask.sum() == 0:
-                logger.warning("Skipping %s: empty train or test split", ctx_name)
-                continue
+            train_ds = OccupancyDataset(split.train_sensor, split.train_labels, split.train_ts, ds_config)
+            test_ds = OccupancyDataset(split.test_sensor, split.test_labels, split.test_ts, ds_config)
 
             trainer = load_mantis_model(pretrained, default_layer, "combined", device)
-            Z = extract_embeddings(trainer, dataset, device)
+            Z_train = extract_embeddings(trainer, train_ds, device)
+            Z_test = extract_embeddings(trainer, test_ds, device)
             del trainer
 
-            Z_train = Z[train_mask]
-            y_train = dataset.labels[train_mask]
-            Z_test = Z[test_mask]
-            y_test = dataset.labels[test_mask]
+            y_train = train_ds.labels
+            y_test = test_ds.labels
 
             metrics = run_train_test_eval(Z_train, y_train, Z_test, y_test, "random_forest", seed)
             elapsed = time.time() - t0
@@ -479,9 +468,9 @@ def run_group_a(cfg: dict, device: str, output_dir: Path) -> list[dict]:
                 "eer": metrics.eer if not np.isnan(metrics.eer) else None,
                 "ci_lower": metrics.ci_lower,
                 "ci_upper": metrics.ci_upper,
-                "n_train": int(train_mask.sum()),
-                "n_test": int(test_mask.sum()),
-                "embed_dim": Z.shape[1],
+                "n_train": len(y_train),
+                "n_test": len(y_test),
+                "embed_dim": Z_train.shape[1],
                 "time_s": round(elapsed, 1),
             }
             results.append(row)
@@ -489,7 +478,7 @@ def run_group_a(cfg: dict, device: str, output_dir: Path) -> list[dict]:
                 "    Acc=%.4f  F1=%.4f  AUC=%.4f  train=%d test=%d (%.1fs)",
                 metrics.accuracy, metrics.f1,
                 metrics.roc_auc if not np.isnan(metrics.roc_auc) else 0.0,
-                int(train_mask.sum()), int(test_mask.sum()),
+                len(y_train), len(y_test),
                 elapsed,
             )
         except Exception as e:
@@ -520,6 +509,7 @@ def run_group_b(cfg: dict, device: str, output_dir: Path) -> list[dict]:
     21 channel combos × 3 contexts (61min, 121min, 241min) = 63 experiments.
     Fixed: L2 (best), RF, combined token.
     Goal: Check if channel importance varies with context length.
+    Uses physically separated train/test sensor CSVs.
     """
     n_total = len(CHANNEL_CONFIGS) * len(GROUP_B_CONTEXTS)
     logger.info("=" * 70)
@@ -546,10 +536,8 @@ def run_group_b(cfg: dict, device: str, output_dir: Path) -> list[dict]:
             t0 = time.time()
 
             try:
-                # Load data with specific channels (P4-style split)
-                sensor_arr, all_labels, train_labels, test_labels, ch_names_loaded, timestamps = (
-                    load_train_test_data(cfg, channels=channels)
-                )
+                # Load physically separated data with specific channels
+                split = load_split_data(cfg, channels=channels)
 
                 ds_config = DatasetConfig(
                     context_mode="bidirectional",
@@ -557,21 +545,16 @@ def run_group_b(cfg: dict, device: str, output_dir: Path) -> list[dict]:
                     context_after=ctx_after,
                     stride=cfg.get("stride", 1),
                 )
-                dataset = OccupancyDataset(sensor_arr, all_labels, timestamps, ds_config)
-                train_mask, test_mask = get_label_masks(dataset, train_labels, test_labels)
-
-                if train_mask.sum() == 0 or test_mask.sum() == 0:
-                    logger.warning("Skipping %s|%s: empty split", ctx_name, ch_name)
-                    continue
+                train_ds = OccupancyDataset(split.train_sensor, split.train_labels, split.train_ts, ds_config)
+                test_ds = OccupancyDataset(split.test_sensor, split.test_labels, split.test_ts, ds_config)
 
                 trainer = load_mantis_model(pretrained, default_layer, "combined", device)
-                Z = extract_embeddings(trainer, dataset, device)
+                Z_train = extract_embeddings(trainer, train_ds, device)
+                Z_test = extract_embeddings(trainer, test_ds, device)
                 del trainer
 
-                Z_train = Z[train_mask]
-                y_train = dataset.labels[train_mask]
-                Z_test = Z[test_mask]
-                y_test = dataset.labels[test_mask]
+                y_train = train_ds.labels
+                y_test = test_ds.labels
 
                 metrics = run_train_test_eval(Z_train, y_train, Z_test, y_test, "random_forest", seed)
                 elapsed = time.time() - t0
@@ -593,9 +576,9 @@ def run_group_b(cfg: dict, device: str, output_dir: Path) -> list[dict]:
                     "eer": metrics.eer if not np.isnan(metrics.eer) else None,
                     "ci_lower": metrics.ci_lower,
                     "ci_upper": metrics.ci_upper,
-                    "n_train": int(train_mask.sum()),
-                    "n_test": int(test_mask.sum()),
-                    "embed_dim": Z.shape[1],
+                    "n_train": len(y_train),
+                    "n_test": len(y_test),
+                    "embed_dim": Z_train.shape[1],
                     "time_s": round(elapsed, 1),
                 }
                 results.append(row)
@@ -603,7 +586,7 @@ def run_group_b(cfg: dict, device: str, output_dir: Path) -> list[dict]:
                     "    Acc=%.4f  F1=%.4f  AUC=%.4f  train=%d test=%d (%.1fs)",
                     metrics.accuracy, metrics.f1,
                     metrics.roc_auc if not np.isnan(metrics.roc_auc) else 0.0,
-                    int(train_mask.sum()), int(test_mask.sum()),
+                    len(y_train), len(y_test),
                     elapsed,
                 )
             except Exception as e:
@@ -633,6 +616,7 @@ def run_group_c(cfg: dict, device: str, output_dir: Path) -> list[dict]:
     3 classifiers × 6 layers × 3 contexts (121, 241, 361 min) = 54 experiments.
     Fixed: M+C channels, combined token.
     Goal: Find best classifier/layer at contexts where it matters.
+    Uses physically separated train/test sensor CSVs.
     """
     n_total = len(CLASSIFIER_NAMES) * len(ALL_LAYERS) * len(GROUP_C_CONTEXTS)
     logger.info("=" * 70)
@@ -644,10 +628,8 @@ def run_group_c(cfg: dict, device: str, output_dir: Path) -> list[dict]:
     pretrained = cfg["model"]["pretrained_name"]
     seed = cfg.get("seed", 42)
 
-    # Load sensor data with P4-style split (shared across all combos)
-    sensor_arr, all_labels, train_labels, test_labels, ch_names, timestamps = (
-        load_train_test_data(cfg, channels=default_channels)
-    )
+    # Load physically separated train/test data (shared across all combos)
+    split = load_split_data(cfg, channels=default_channels)
 
     exp_idx = 0
     for ctx_cfg in GROUP_C_CONTEXTS:
@@ -664,22 +646,22 @@ def run_group_c(cfg: dict, device: str, output_dir: Path) -> list[dict]:
         )
 
         try:
-            dataset = OccupancyDataset(sensor_arr, all_labels, timestamps, ds_config)
-            train_mask, test_mask = get_label_masks(dataset, train_labels, test_labels)
+            train_ds = OccupancyDataset(split.train_sensor, split.train_labels, split.train_ts, ds_config)
+            test_ds = OccupancyDataset(split.test_sensor, split.test_labels, split.test_ts, ds_config)
         except Exception as e:
             logger.error("Dataset build failed for %s: %s", ctx_name, e)
             continue
 
-        if train_mask.sum() == 0 or test_mask.sum() == 0:
-            logger.warning("Skipping %s: empty split", ctx_name)
-            continue
+        y_train = train_ds.labels
+        y_test = test_ds.labels
 
         for layer in ALL_LAYERS:
             # Extract embeddings once per context × layer
             logger.info("  --- L%d ---", layer)
             try:
                 trainer = load_mantis_model(pretrained, layer, "combined", device)
-                Z = extract_embeddings(trainer, dataset, device)
+                Z_train = extract_embeddings(trainer, train_ds, device)
+                Z_test = extract_embeddings(trainer, test_ds, device)
                 del trainer
             except Exception as e:
                 logger.error("  Embedding extraction failed (L%d): %s", layer, e)
@@ -689,11 +671,6 @@ def run_group_c(cfg: dict, device: str, output_dir: Path) -> list[dict]:
                         "context_name": ctx_name, "error": str(e),
                     })
                 continue
-
-            Z_train = Z[train_mask]
-            y_train = dataset.labels[train_mask]
-            Z_test = Z[test_mask]
-            y_test = dataset.labels[test_mask]
 
             for clf_name in CLASSIFIER_NAMES:
                 exp_idx += 1
@@ -721,9 +698,9 @@ def run_group_c(cfg: dict, device: str, output_dir: Path) -> list[dict]:
                         "eer": metrics.eer if not np.isnan(metrics.eer) else None,
                         "ci_lower": metrics.ci_lower,
                         "ci_upper": metrics.ci_upper,
-                        "n_train": int(train_mask.sum()),
-                        "n_test": int(test_mask.sum()),
-                        "embed_dim": Z.shape[1],
+                        "n_train": len(y_train),
+                        "n_test": len(y_test),
+                        "embed_dim": Z_train.shape[1],
                         "time_s": round(elapsed, 1),
                     }
                     results.append(row)
@@ -732,7 +709,7 @@ def run_group_c(cfg: dict, device: str, output_dir: Path) -> list[dict]:
                         exp_idx, n_total, exp_name,
                         metrics.accuracy, metrics.f1,
                         metrics.roc_auc if not np.isnan(metrics.roc_auc) else 0.0,
-                        int(train_mask.sum()), int(test_mask.sum()),
+                        len(y_train), len(y_test),
                         elapsed,
                     )
                 except Exception as e:
@@ -932,7 +909,7 @@ def generate_summary(all_results: list[dict], output_dir: Path):
         "failed": len(all_results) - len(valid),
         "with_auc": len(has_auc),
         "without_auc": len(no_auc),
-        "split_method": "P4-style (separate train/test event files)",
+        "split_method": "physically separated train/test sensor + event CSVs",
         "top5": ranked.head(5).to_dict("records"),
         "metric_note": "Primary: AUC (threshold-independent), Secondary: EER",
     }
@@ -980,7 +957,7 @@ def main():
     logger.info("Device: %s", device)
     logger.info("Config: %s", args.config)
     logger.info("Output: %s", output_dir)
-    logger.info("Split method: P4-style (separate train/test event files)")
+    logger.info("Split method: physically separated train/test sensor + event CSVs")
 
     t_start = time.time()
     all_results = []
