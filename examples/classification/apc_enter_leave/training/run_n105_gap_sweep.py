@@ -167,7 +167,7 @@ def _extract_embeddings(raw_cfg, include_none, device, layer, ctx_before,
     output_token = model_cfg.get("output_token", "combined")
 
     model = load_mantis_model(pretrained_name, layer, output_token, device)
-    Z = extract_all_embeddings(model, dataset, device)
+    Z = extract_all_embeddings(model, dataset)
 
     labels = dataset.event_labels
     return Z, labels, class_names

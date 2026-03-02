@@ -283,26 +283,40 @@ def evaluate_sklearn(Z_train, y_train, Z_test, y_test, clf_name):
 # ============================================================================
 
 def load_data_and_embeddings(cfg, channels, layer, device):
-    """Load data, create dataset, extract embeddings."""
-    cfg = {**cfg}  # shallow copy
+    """Load data, create dataset, extract embeddings.
+
+    Follows the same pattern as run_phase2_sweep.py:
+    1. load_occupancy_data(pp_cfg, split_date) → 5 return values
+    2. Merge train/test labels → OccupancyDataset
+    3. get_train_test_split() for mask
+    """
     channel_names = [CHANNEL_MAP[k] for k in channels]
     cfg_data = cfg.get("data", {})
+    split_date = cfg.get("split_date", "2026-02-15")
 
     pp_cfg = PreprocessConfig(
         sensor_csv=cfg_data["sensor_csv"],
-        events_csv=cfg_data["events_csv"],
-        column_names_csv=cfg_data.get("column_names_csv", ""),
+        label_csv=cfg_data.get("label_csv", cfg_data.get("events_csv", "")),
+        label_format=cfg_data.get("label_format", "events"),
+        initial_occupancy=cfg_data.get("initial_occupancy", 0),
+        binarize=cfg_data.get("binarize", True),
         channels=channel_names,
     )
-    sensor_array, sensor_ts, occ_ts, occ_labels = load_occupancy_data(pp_cfg)
+    sensor_arr, train_labels, test_labels, _, timestamps = (
+        load_occupancy_data(pp_cfg, split_date=split_date)
+    )
+    all_labels = np.where(train_labels >= 0, train_labels, test_labels)
 
     ds_cfg_dict = cfg.get("dataset", {})
+    stride = cfg.get("stride", 1)
     ds_cfg = DatasetConfig(
         context_mode=ds_cfg_dict.get("context_mode", "bidirectional"),
         context_before=ds_cfg_dict.get("context_before", 125),
         context_after=ds_cfg_dict.get("context_after", 125),
+        stride=stride,
     )
-    dataset = OccupancyDataset(sensor_array, sensor_ts, occ_ts, occ_labels, ds_cfg)
+    dataset = OccupancyDataset(sensor_arr, all_labels, timestamps, ds_cfg)
+    train_mask, test_mask = dataset.get_train_test_split(split_date)
 
     model_cfg = cfg.get("model", {})
     pretrained_name = model_cfg.get("pretrained_name", "paris-noah/MantisV2")
@@ -313,11 +327,6 @@ def load_data_and_embeddings(cfg, channels, layer, device):
 
     _, y = dataset.get_numpy_arrays()
     y = y.astype(np.int64)
-
-    # Split by date
-    split_date = cfg.get("evaluation", {}).get("split_date", "2026-02-15")
-    train_mask = dataset.timestamps < np.datetime64(split_date)
-    test_mask = ~train_mask
 
     Z_train, y_train = Z[train_mask], y[train_mask]
     Z_test, y_test = Z[test_mask], y[test_mask]
