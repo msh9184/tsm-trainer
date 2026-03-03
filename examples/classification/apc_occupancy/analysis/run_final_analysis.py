@@ -723,7 +723,9 @@ def fig06_mlp_recipe_heatmap(
     # Try to determine panels
     if "hidden_dims" in df.columns or "hidden" in df.columns:
         hidden_col = "hidden_dims" if "hidden_dims" in df.columns else "hidden"
-        unique_hidden = df[hidden_col].unique()
+        # Filter out NaN values before sorting (NaN = rows from other subgroups)
+        unique_hidden = [v for v in df[hidden_col].dropna().unique()]
+        unique_hidden = sorted(unique_hidden, key=str)
 
         if len(unique_hidden) > 1 and "lr" in df.columns and "dropout" in df.columns:
             n_panels = min(len(unique_hidden), 4)
@@ -731,7 +733,7 @@ def fig06_mlp_recipe_heatmap(
             if n_panels == 1:
                 axes = [axes]
 
-            for idx, (hd, ax) in enumerate(zip(sorted(unique_hidden)[:n_panels], axes)):
+            for idx, (hd, ax) in enumerate(zip(unique_hidden[:n_panels], axes)):
                 sub = df[df[hidden_col] == hd]
                 pivot = sub.pivot_table(values="auc", index="lr", columns="dropout",
                                         aggfunc="max")
@@ -968,40 +970,32 @@ def fig09_multiseed_stability(
         return
 
     # Look for stability experiments (multi-seed runs with same config)
-    # These typically have "seed" in the name or a "seed" column
+    # Group O has: subgroup="stability", config column with base config name,
+    # and name like "MLP[64]-d0.2_v2_L2_seed42"
     stability_mask = pd.Series([False] * len(df))
-    if "name" in df.columns:
-        stability_mask = df["name"].str.contains("seed|stability|multi", case=False, na=False)
     if "subgroup" in df.columns:
-        stability_mask = stability_mask | (df["subgroup"] == "stability")
+        stability_mask = df["subgroup"] == "stability"
+    if stability_mask.sum() < 2 and "name" in df.columns:
+        stability_mask = stability_mask | df["name"].str.contains(
+            "seed|stability|multi", case=False, na=False
+        )
 
     if stability_mask.sum() < 2:
-        # Fall back: look for repeated config patterns
-        logger.info("Fig 9: No explicit stability experiments, attempting config grouping")
-        # Group by classifier/head type and look for multi-run configs
-        # Try using all Group O data grouped by base config
-        if "name" in df.columns:
-            # Strip seed suffix to find base configs
-            df["_base_config"] = df["name"].str.replace(r"\|seed=\d+", "", regex=True)
-            config_counts = df["_base_config"].value_counts()
-            multi_seed_configs = config_counts[config_counts >= 2].index.tolist()
+        logger.warning("Fig 9: No multi-seed experiments found, skipping")
+        return
 
-            if not multi_seed_configs:
-                logger.warning("Fig 9: No multi-seed experiments found, skipping")
-                return
+    stability_df = df[stability_mask].copy()
 
-            stability_df = df[df["_base_config"].isin(multi_seed_configs)].copy()
-        else:
-            logger.warning("Fig 9: Cannot identify stability experiments, skipping")
-            return
+    # Determine base config: prefer "config" column, fallback to name parsing
+    if "config" in stability_df.columns and stability_df["config"].notna().any():
+        stability_df["_base_config"] = stability_df["config"].astype(str)
+    elif "name" in stability_df.columns:
+        # Strip _seed\d+ or |seed=\d+ suffix to find base config
+        stability_df["_base_config"] = stability_df["name"].str.replace(
+            r"[_|]seed=?\d+", "", regex=True
+        )
     else:
-        stability_df = df[stability_mask].copy()
-        if "name" in stability_df.columns:
-            stability_df["_base_config"] = stability_df["name"].str.replace(
-                r"\|seed=\d+", "", regex=True
-            )
-        else:
-            stability_df["_base_config"] = "config"
+        stability_df["_base_config"] = "config"
 
     stability_df = stability_df.dropna(subset=["auc"])
     if stability_df.empty:
