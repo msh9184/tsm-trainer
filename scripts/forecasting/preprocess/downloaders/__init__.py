@@ -19,6 +19,9 @@ def get_downloader(kind: str):
     elif kind == "gift-eval":
         from . import gift_eval
         return gift_eval
+    elif kind == "gift-eval-pretrain":
+        from . import gift_eval_pretrain
+        return gift_eval_pretrain
     elif kind == "ltsf":
         from . import ltsf
         return ltsf

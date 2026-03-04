@@ -44,6 +44,19 @@ Examples
       --root_dir /group-volume/ts-dataset \\
       --datasets chronos_train chronos_valid \\
       --stage 3
+
+  # GiftEvalPretrain — full pipeline (download → convert → validate)
+  python download_and_prepare.py \\
+      --root_dir /group-volume/ts-dataset \\
+      --datasets gift-eval-pretrain
+
+  # GiftEvalPretrain — convert only (skip re-download, resume safe)
+  python download_and_prepare.py \\
+      --root_dir /group-volume/ts-dataset \\
+      --datasets gift-eval-pretrain \\
+      --stage 2 \\
+      --num_proc 4 \\
+      --resume
 """
 
 from __future__ import annotations
@@ -196,11 +209,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--datasets", nargs="+", default=["all"],
-        choices=["all", "chronos_train", "chronos_valid", "fev-bench", "gift-eval", "ltsf"],
+        choices=["all", "chronos_train", "chronos_valid", "fev-bench", "gift-eval",
+                 "gift-eval-pretrain", "ltsf"],
         metavar="KIND",
         help=(
             "Which dataset kinds to process. "
-            "Choices: all | chronos_train | chronos_valid | fev-bench | gift-eval | ltsf"
+            "Choices: all | chronos_train | chronos_valid | fev-bench | gift-eval | "
+            "gift-eval-pretrain | ltsf"
         ),
     )
     parser.add_argument(

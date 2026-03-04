@@ -5,6 +5,23 @@
 #   ./download_and_prepare.sh --root_dir /group-volume/ts-dataset --datasets all
 #   ./download_and_prepare.sh --root_dir /group-volume/ts-dataset --datasets chronos_valid --subset chronos-lite --stage 2
 #
+#   # GiftEvalPretrain — full pipeline (download → convert → validate)
+#   ./download_and_prepare.sh \
+#       --root_dir /group-volume/ts-dataset \
+#       --datasets gift-eval-pretrain
+#
+#   # GiftEvalPretrain — convert + validate only (if snapshot already downloaded)
+#   ./download_and_prepare.sh \
+#       --root_dir /group-volume/ts-dataset \
+#       --datasets gift-eval-pretrain \
+#       --stage 2 \
+#       --num_proc 4 \
+#       --resume
+#
+# Output paths for GiftEvalPretrain:
+#   Snapshot (raw)   : {root_dir}/gift_eval_pretrain_raw/
+#   Arrow (training) : {root_dir}/chronos_datasets/gift_eval_pretrain/
+#
 # Environment variables (set before calling this script):
 #   PYTHON          Python interpreter to use (default: python3)
 #   HF_TOKEN        HuggingFace authentication token

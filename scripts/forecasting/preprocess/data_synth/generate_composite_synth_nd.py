@@ -79,6 +79,13 @@ SYNTH_METHODS = [
     "piecewise_mix", "time_warp", "nonlinear_mix",
 ]
 
+# Datasets with more than this many rows skip the full PyArrow offset scan.
+# Reading all N_rows × 4 bytes of offset buffers causes NFS page cache
+# exhaustion when hundreds of datasets are scanned sequentially (O(N²)
+# re-read pattern once the NFS client cache is saturated).  The sampling
+# fallback is used instead, which reads only a bounded Arrow slice.
+_LARGE_DS_ROWS: int = 500_000
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Variate Pool
@@ -284,10 +291,13 @@ def _build_length_filter(
 
     n_total = len(ds)
 
-    if n_var == 1 and len(target_keys) == 1:
+    # PyArrow fast path: read offset buffer only (zero data materialisation).
+    # Restricted to small-enough datasets — for large ones the offset buffer
+    # alone can be hundreds of MB on NFS, exhausting the page cache when
+    # hundreds of datasets are scanned sequentially (_LARGE_DS_ROWS threshold).
+    if n_var == 1 and len(target_keys) == 1 and n_total <= _LARGE_DS_ROWS:
         try:
             import pyarrow as pa
-            # Read list sizes from offset buffers only — zero data materialisation.
             # Arrow ListArray layout: buffers = [validity, offsets(int32), ...]
             # LargeListArray: offsets are int64.
             tgt_col = ds.data.column(target_keys[0])   # ChunkedArray[ListArray]
@@ -313,7 +323,10 @@ def _build_length_filter(
         except Exception:
             pass  # fall through to sampling
 
-    # Sampling fallback (multivariate, multi-key, or PyArrow unavailable)
+    # Sampling fallback (multivariate, multi-key, large datasets, or PyArrow error).
+    # Uses Arrow batch read (ds[list_of_indices] → take()) which reads one
+    # contiguous file slice per shard — 10–100× fewer NFS round-trips than
+    # the equivalent number of per-row random seeks.
     n_scan = min(n_total, 50_000)
     rng0 = np.random.default_rng(0)
     sample_idx = (
@@ -323,13 +336,25 @@ def _build_length_filter(
     valid: list[int] = []
     # Use first key; for multi-key datasets all columns have the same row length
     check_key = target_keys[0]
-    for idx in sample_idx:
-        try:
-            tgt = np.array(ds[int(idx)][check_key], dtype=np.float64)
-            if tgt.shape[-1] >= min_length:
-                valid.append(int(idx))
-        except Exception:
-            pass
+    try:
+        # Batch read: Arrow take() — far faster on NFS than per-row access
+        batch = ds[sample_idx.tolist()]
+        for idx, tgt in zip(sample_idx, batch[check_key]):
+            try:
+                arr = np.asarray(tgt, dtype=np.float64)
+                if arr.shape[-1] >= min_length:
+                    valid.append(int(idx))
+            except Exception:
+                pass
+    except Exception:
+        # Last-resort: per-row fallback (handles unusual dataset formats)
+        for idx in sample_idx:
+            try:
+                tgt = np.array(ds[int(idx)][check_key], dtype=np.float64)
+                if tgt.shape[-1] >= min_length:
+                    valid.append(int(idx))
+            except Exception:
+                pass
     # If every sampled row is valid, conservatively assume all rows are valid
     result = (
         np.arange(n_total, dtype=np.int64)
@@ -1152,6 +1177,17 @@ def main() -> None:
         )
     else:
         _SHARED_CACHE = None
+
+    # Release Arrow dataset objects → free all mmap regions and VMAs before fork.
+    # Workers use _SHARED_CACHE exclusively; keeping hundreds of datasets open
+    # multiplies the VMA count (each shard adds several VMAs) and causes Linux
+    # kernel memory operations to slow O(N_VMAs), stalling every forked worker.
+    n_ds_released = len(_SHARED_POOL._datasets)
+    _SHARED_POOL._datasets.clear()
+    logger.info(
+        "Released %d dataset mmap region(s) before fork (workers use shared cache).",
+        n_ds_released,
+    )
 
     gc.collect()   # compact heap before fork to minimise CoW dirty pages
     tmp_dirs: dict[int, Path] = {}

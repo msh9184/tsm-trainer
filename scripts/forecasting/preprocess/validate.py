@@ -53,6 +53,8 @@ def validate(spec: "DatasetSpec", root: Path) -> ValidationResult:
         return validate_fev_bench(root)
     elif spec.kind == "gift-eval":
         return validate_gift_eval(root)
+    elif spec.kind == "gift-eval-pretrain":
+        return validate_gift_eval_pretrain(root)
     elif spec.kind == "ltsf":
         return validate_ltsf(spec, root)
     else:
@@ -258,6 +260,64 @@ def validate_gift_eval(root: Path) -> ValidationResult:
     return ValidationResult(
         name=name, kind=kind, ok=True,
         message=f"{len(files)} files, {size_mb:.1f} MB",
+        stats=stats,
+    )
+
+
+# ---------------------------------------------------------------------------
+# gift-eval-pretrain
+# ---------------------------------------------------------------------------
+
+def validate_gift_eval_pretrain(root: Path) -> ValidationResult:
+    """Validate GiftEvalPretrain Arrow DatasetDict (training corpus)."""
+    path = root / "chronos_datasets" / "gift_eval_pretrain"
+    name, kind = "gift_eval_pretrain", "gift-eval-pretrain"
+
+    if not path.exists():
+        return ValidationResult(name=name, kind=kind, ok=False,
+                                message=f"Path does not exist: {path}")
+
+    try:
+        import datasets as hf_datasets
+        ds_dict = hf_datasets.load_from_disk(str(path))
+    except Exception as e:
+        return ValidationResult(name=name, kind=kind, ok=False,
+                                message=f"load_from_disk failed: {e}")
+
+    if "train" not in ds_dict:
+        return ValidationResult(name=name, kind=kind, ok=False,
+                                message=f"Missing 'train' split. Keys: {list(ds_dict.keys())}")
+
+    ds = ds_dict["train"]
+    if len(ds) == 0:
+        return ValidationResult(name=name, kind=kind, ok=False,
+                                message="'train' split is empty")
+
+    seq_cols = [
+        col for col, feat in ds.features.items()
+        if hasattr(feat, "feature")
+    ]
+
+    # Sample a few rows to check length distribution
+    sample_n = min(10, len(ds))
+    sample = ds.select(range(sample_n))
+    lengths = {}
+    for col in seq_cols[:3]:
+        try:
+            lens = [len(v) for v in sample[col]]
+            lengths[col] = f"len: min={min(lens)}, max={max(lens)}, mean={sum(lens)/len(lens):.0f}"
+        except Exception:
+            lengths[col] = "?"
+
+    stats = {
+        "rows": len(ds),
+        "columns": ds.column_names,
+        "sequence_cols": seq_cols,
+        **lengths,
+    }
+    return ValidationResult(
+        name=name, kind=kind, ok=True,
+        message=f"{len(ds):,} rows in 'train' split",
         stats=stats,
     )
 

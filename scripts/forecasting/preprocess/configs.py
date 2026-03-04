@@ -36,7 +36,7 @@ _SPECIAL_YAML_NAMES = {"fev-bench.yaml", "gift-eval.yaml", "ltsf.yaml"}
 @dataclass
 class DatasetSpec:
     name: str
-    kind: Literal["chronos_train", "chronos_valid", "fev-bench", "gift-eval", "ltsf"]
+    kind: Literal["chronos_train", "chronos_valid", "fev-bench", "gift-eval", "gift-eval-pretrain", "ltsf"]
     hf_repo: str
     meta: dict = field(default_factory=dict)
 
@@ -97,7 +97,7 @@ class ConfigScanner:
             "ETTh1,ETTm1".  None means include everything.
         """
         config_dir = Path(config_dir)
-        all_kinds = {"chronos_train", "chronos_valid", "fev-bench", "gift-eval", "ltsf"}
+        all_kinds = {"chronos_train", "chronos_valid", "fev-bench", "gift-eval", "gift-eval-pretrain", "ltsf"}
 
         if datasets_filter is None or "all" in datasets_filter:
             active_kinds = all_kinds
@@ -128,6 +128,13 @@ class ConfigScanner:
                     kind="gift-eval",
                     hf_repo="Salesforce/GiftEval",
                 ))
+
+        if "gift-eval-pretrain" in active_kinds:
+            specs.append(DatasetSpec(
+                name="gift_eval_pretrain",
+                kind="gift-eval-pretrain",
+                hf_repo="Salesforce/GiftEvalPretrain",
+            ))
 
         if "ltsf" in active_kinds:
             ltsf_yaml = config_dir / "ltsf.yaml"
