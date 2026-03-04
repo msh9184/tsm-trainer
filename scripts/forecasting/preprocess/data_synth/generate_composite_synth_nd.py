@@ -137,7 +137,12 @@ def _detect_target_keys(ds) -> list[str]:
 class VariatePool:
     """Random-access pool of 1-D time series drawn from multiple HF Arrow datasets."""
 
-    def __init__(self, data_paths: list[str], min_length: int) -> None:
+    def __init__(
+        self,
+        data_paths: list[str],
+        min_length: int,
+        precomputed_meta: list[dict | None] | None = None,
+    ) -> None:
         import datasets as hf_datasets
 
         self._datasets: list = []
@@ -146,8 +151,18 @@ class VariatePool:
         self._target_keys: list[list[str]] = []   # variate column names per dataset
         self._cum: list[int] = [0]
         self._min_length = min_length
+        self._loaded_paths: list[str] = []
 
-        for path in data_paths:
+        for idx, path in enumerate(data_paths):
+            # If precomputed_meta is provided and this path failed in main, skip it
+            meta_hint = (
+                precomputed_meta[idx]
+                if precomputed_meta is not None and idx < len(precomputed_meta)
+                else None
+            )
+            if meta_hint is None and precomputed_meta is not None:
+                continue
+
             try:
                 raw = hf_datasets.load_from_disk(str(path))
                 ds = raw.get("train", next(iter(raw.values()))) if hasattr(raw, "keys") else raw
@@ -155,14 +170,20 @@ class VariatePool:
                 logger.warning("Cannot load %s: %s — skipping.", path, exc)
                 continue
 
-            try:
-                target_keys = _detect_target_keys(ds)
-            except ValueError as exc:
-                logger.warning("  Pool SKIP %-50s  (%s)", Path(path).name, exc)
-                continue
+            if meta_hint is not None:
+                # Workers: reuse precomputed metadata — skip NFS detect calls
+                target_keys = meta_hint["target_keys"]
+                n_var = meta_hint["n_variates"]
+            else:
+                # Main process: detect normally
+                try:
+                    target_keys = _detect_target_keys(ds)
+                except ValueError as exc:
+                    logger.warning("  Pool SKIP %-50s  (%s)", Path(path).name, exc)
+                    continue
+                n_var = _detect_n_variates(ds, target_keys)
 
-            n_var = _detect_n_variates(ds, target_keys)
-            valid = _build_length_filter(ds, min_length, n_var, target_keys)
+            valid = _build_length_filter(ds, min_length, n_var, target_keys, ds_path=path)
             if len(valid) == 0:
                 logger.warning(
                     "  Pool SKIP %-50s  (no rows with length >= %d)",
@@ -171,6 +192,7 @@ class VariatePool:
                 continue
 
             pool_size = len(valid) * n_var
+            self._loaded_paths.append(path)
             self._datasets.append(ds)
             self._n_variates.append(n_var)
             self._valid_rows.append(valid)
@@ -239,14 +261,27 @@ def _detect_n_variates(ds, target_keys: list[str]) -> int:
 
 
 def _build_length_filter(
-    ds, min_length: int, n_var: int, target_keys: list[str]
+    ds, min_length: int, n_var: int, target_keys: list[str],
+    ds_path: str | None = None,
 ) -> np.ndarray:
     """Return row indices where series length >= min_length.
 
     Fast path: PyArrow vectorized list_size for single-key univariate datasets (O(N) in C).
     Fallback:  sample up to 50 K rows for multivariate or on PyArrow error.
     If ALL sampled rows pass, all rows are assumed valid → returns np.arange(len(ds)).
+
+    Results are cached to {ds_path}/._valid_rows_min{min_length}.npy when ds_path is given.
     """
+    # ── Disk cache check ──────────────────────────────────────────────────────
+    _cache: Path | None = None
+    if ds_path is not None:
+        _cache = Path(ds_path) / f"._valid_rows_min{min_length}.npy"
+        if _cache.exists():
+            try:
+                return np.load(_cache)
+            except Exception:
+                pass  # corrupted cache → recompute
+
     n_total = len(ds)
 
     if n_var == 1 and len(target_keys) == 1:
@@ -268,7 +303,13 @@ def _build_length_filter(
                 offs = np.frombuffer(offsets_buf, dtype=dtype)
                 sizes_parts.append(np.diff(offs).astype(np.int64))
             sizes_np = np.concatenate(sizes_parts) if sizes_parts else np.array([], np.int64)
-            return np.where(sizes_np >= min_length)[0].astype(np.int64)
+            result = np.where(sizes_np >= min_length)[0].astype(np.int64)
+            if _cache is not None:
+                try:
+                    np.save(_cache, result)
+                except Exception:
+                    pass  # NFS permission issue → proceed without cache
+            return result
         except Exception:
             pass  # fall through to sampling
 
@@ -290,9 +331,17 @@ def _build_length_filter(
         except Exception:
             pass
     # If every sampled row is valid, conservatively assume all rows are valid
-    if len(valid) == len(sample_idx):
-        return np.arange(n_total, dtype=np.int64)
-    return np.array(valid, dtype=np.int64)
+    result = (
+        np.arange(n_total, dtype=np.int64)
+        if len(valid) == len(sample_idx)
+        else np.array(valid, dtype=np.int64)
+    )
+    if _cache is not None:
+        try:
+            np.save(_cache, result)
+        except Exception:
+            pass  # NFS permission issue → proceed without cache
+    return result
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -470,18 +519,22 @@ def _prefetch_variate_cache(
 
 
 def _worker_init(data_paths: list[str], cfg: dict) -> None:
+    import os, time
+    # Stagger worker NFS init: spread across 0–6 s in 20 buckets of 0.3 s
+    time.sleep((os.getpid() % 20) * 0.3)
+
     # Clamp BLAS/OpenMP to 1 thread per worker (same rationale as kernel synth).
     try:
         from threadpoolctl import threadpool_limits
         threadpool_limits(limits=1)
     except ImportError:
-        import os
         for _v in ("OMP_NUM_THREADS", "MKL_NUM_THREADS",
                    "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
             os.environ[_v] = "1"
     global _POOL, _WORKER_CFG, _VARIATE_CACHE
     _WORKER_CFG = cfg
-    _POOL = VariatePool(data_paths, cfg["min_length"])
+    precomputed_meta = cfg.get("precomputed_meta")
+    _POOL = VariatePool(data_paths, cfg["min_length"], precomputed_meta=precomputed_meta)
     cache_size = cfg.get("variate_cache_size", 5000)
     if cache_size > 0:
         _VARIATE_CACHE = _prefetch_variate_cache(_POOL, cfg["min_length"], cache_size)
@@ -1035,10 +1088,28 @@ def main() -> None:
                 args.max_tokens, args.noise_scale, args.uncorrelated_ratio)
 
     # Log pool info once before launching per-dim pools
+    import gc
     logger.info("Scanning input datasets:")
     _dummy = VariatePool(args.data_paths, args.min_length)
     logger.info("Total variate pool size: %d", _dummy.total)
+
+    # Build precomputed_meta so workers skip NFS detect calls
+    _path_to_ds_idx = {p: i for i, p in enumerate(_dummy._loaded_paths)}
+    precomputed_meta: list[dict | None] = []
+    for path in args.data_paths:
+        if path in _path_to_ds_idx:
+            i = _path_to_ds_idx[path]
+            precomputed_meta.append({
+                "target_keys": _dummy._target_keys[i],
+                "n_variates":  _dummy._n_variates[i],
+            })
+        else:
+            precomputed_meta.append(None)  # failed to load
+
     del _dummy
+    gc.collect()   # release memory before fork so CoW pages are minimised
+
+    cfg["precomputed_meta"] = precomputed_meta
     tmp_dirs: dict[int, Path] = {}
     out_paths: dict[int, Path] = {}
     for d in dims:
