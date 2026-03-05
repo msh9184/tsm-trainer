@@ -69,14 +69,8 @@ class ArrowFileIndex:
     Build a global index over multiple Arrow IPC stream files
     for O(log N) random access without loading all data.
 
-    Uses disk-based row-count cache (내용4) and an in-process
-    per-file table LRU cache to avoid repeated full-file reads.
+    Uses disk-based row-count cache (내용4).
     """
-
-    # Per-process in-memory table cache  (file_path → pa.Table)
-    # Shared across all ArrowFileIndex instances in the same process.
-    _table_cache: dict[Path, pa.Table] = {}
-    _TABLE_CACHE_MAX = 8  # max files to keep fully in memory
 
     def __init__(self, arrow_files: list[Path], cache_dir: Optional[Path] = None):
         self._files = list(arrow_files)
@@ -87,7 +81,6 @@ class ArrowFileIndex:
         self._build_index()
 
     def _get_cache_path(self) -> Path:
-        # Use a hash of file paths as cache key
         import hashlib
         key = hashlib.md5("|".join(str(f) for f in self._files).encode()).hexdigest()
         return self._cache_dir / f"index_{key}.json"
@@ -143,7 +136,6 @@ class ArrowFileIndex:
                 return n
             except pa.lib.ArrowInvalid:
                 pass
-        # Try as arrow IPC file format
         with open(fpath, "rb") as f:
             try:
                 reader = pa_ipc.open_file(f)
@@ -152,6 +144,15 @@ class ArrowFileIndex:
                 pass
         return 0
 
+    @staticmethod
+    def _load_table(fpath: Path) -> pa.Table:
+        """Load an arrow file as a PyArrow Table (no caching — caller manages lifecycle)."""
+        with open(fpath, "rb") as f:
+            try:
+                return pa_ipc.open_stream(f).read_all()
+            except pa.lib.ArrowInvalid:
+                return pa_ipc.open_file(fpath).read_all()
+
     @property
     def total_rows(self) -> int:
         return int(self._cumulative[-1]) if len(self._cumulative) > 0 else 0
@@ -159,78 +160,91 @@ class ArrowFileIndex:
     def __len__(self) -> int:
         return self.total_rows
 
-    def get_row(self, global_idx: int) -> dict:
-        """Read a single row by global index."""
-        if global_idx < 0 or global_idx >= self.total_rows:
-            raise IndexError(f"Index {global_idx} out of range [0, {self.total_rows})")
-
-        # Binary search for file
-        file_idx = int(np.searchsorted(self._cumulative, global_idx + 1, side="right")) - 1
-        local_idx = global_idx - int(self._cumulative[file_idx])
-        return self._read_local(self._files[file_idx], local_idx)
-
-    @classmethod
-    def _load_table(cls, fpath: Path) -> pa.Table:
-        """Load an arrow file as a PyArrow Table, with LRU in-memory cache (내용4)."""
-        if fpath in cls._table_cache:
-            return cls._table_cache[fpath]
-
-        # Load from disk
-        with open(fpath, "rb") as f:
-            try:
-                table = pa_ipc.open_stream(f).read_all()
-            except pa.lib.ArrowInvalid:
-                table = pa_ipc.open_file(fpath).read_all()
-
-        # LRU eviction: remove oldest entry if at capacity
-        if len(cls._table_cache) >= cls._TABLE_CACHE_MAX:
-            oldest_key = next(iter(cls._table_cache))
-            del cls._table_cache[oldest_key]
-        cls._table_cache[fpath] = table
-        return table
-
-    @classmethod
-    def _read_local(cls, fpath: Path, local_idx: int) -> dict:
-        """Read local_idx-th row from an arrow IPC stream file (cache-backed)."""
-        table = cls._load_table(fpath)
-        row = {col: table.column(col)[local_idx].as_py()
-               for col in table.schema.names}
-        return row
-
-    def sample_target_arrays(self, n: int, rng: np.random.Generator,
-                              min_len: int, max_len: int,
-                              max_retries: int = 20) -> list[np.ndarray]:
+    def batch_sample_pool(
+        self,
+        pool_size: int,
+        rng: np.random.Generator,
+        min_len: int,
+        max_len: int,
+    ) -> list[np.ndarray]:
         """
-        Sample n 1-D target arrays of length in [min_len, max_len].
-        Returns flat float32 arrays of valid length.
+        Efficiently pre-sample a pool of 1-D target arrays by batching
+        reads per file. Each file is loaded once, sampled, then released.
+        This avoids the random-I/O thrashing that occurs when workers
+        independently access thousands of files.
         """
-        results = []
-        attempts = 0
-        while len(results) < n and attempts < n * max_retries:
-            global_idx = int(rng.integers(0, self.total_rows))
+        # Decide how many rows to sample per file, proportional to file size
+        # Over-sample by 2x to account for filtering
+        n_to_draw = pool_size * 2
+        global_indices = rng.integers(0, self.total_rows, size=n_to_draw)
+
+        # Group indices by file
+        file_indices = np.searchsorted(
+            self._cumulative, global_indices + 1, side="right"
+        ) - 1
+
+        # Build per-file local index lists
+        per_file: dict[int, np.ndarray] = {}
+        for fi in range(len(self._files)):
+            mask = file_indices == fi
+            if mask.any():
+                local_idxs = global_indices[mask] - int(self._cumulative[fi])
+                per_file[fi] = local_idxs
+
+        results: list[np.ndarray] = []
+        n_files_done = 0
+        for fi, local_idxs in per_file.items():
+            fpath = self._files[fi]
             try:
-                row = self.get_row(global_idx)
-                target_raw = row.get("target", None)
-                if target_raw is None:
-                    attempts += 1
-                    continue
-                target = np.array(target_raw, dtype=np.float32)
-                # Flatten if 2D (multivariate stored as nested list)
-                if target.ndim == 2:
-                    # Pick one variate at random
-                    v = int(rng.integers(0, target.shape[0]))
-                    target = target[v]
-                if target.ndim != 1 or len(target) < min_len:
-                    attempts += 1
-                    continue
-                # Clip to max_len from a random start
-                if len(target) > max_len:
-                    start = int(rng.integers(0, len(target) - max_len + 1))
-                    target = target[start: start + max_len]
-                results.append(target)
+                table = self._load_table(fpath)
             except Exception:
-                attempts += 1
-        return results
+                continue
+
+            if "target" not in table.schema.names:
+                del table
+                continue
+
+            target_col = table.column("target")
+            n_rows_in_file = table.num_rows
+
+            for li in local_idxs:
+                li = int(li)
+                if li >= n_rows_in_file:
+                    continue
+                try:
+                    target_raw = target_col[li].as_py()
+                    if target_raw is None:
+                        continue
+                    target = np.array(target_raw, dtype=np.float32)
+                    if target.ndim == 2:
+                        v = int(rng.integers(0, target.shape[0]))
+                        target = target[v]
+                    if target.ndim != 1 or len(target) < min_len:
+                        continue
+                    if len(target) > max_len:
+                        start = int(rng.integers(0, len(target) - max_len + 1))
+                        target = target[start : start + max_len]
+                    results.append(target)
+                except Exception:
+                    continue
+
+            # Release file memory immediately
+            del table, target_col
+
+            n_files_done += 1
+            if n_files_done % 500 == 0:
+                logger.info(
+                    f"  Pool sampling: {n_files_done}/{len(per_file)} files, "
+                    f"{len(results)} arrays collected"
+                )
+            if len(results) >= pool_size:
+                break
+
+        logger.info(
+            f"  Pool sampling complete: {len(results)} arrays from "
+            f"{n_files_done} files"
+        )
+        return results[:pool_size]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -464,22 +478,18 @@ _MIX_WEIGHTS /= _MIX_WEIGHTS.sum()
 # Worker function (must be picklable — no class methods)
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Global shared index (set in worker initializer or before Pool creation)
-_GLOBAL_INDEX: Optional[ArrowFileIndex] = None
-
-
-def _worker_init(files_list: list[Path], cache_dir: Path) -> None:
-    """Initialize global arrow index in each worker process."""
-    global _GLOBAL_INDEX
-    _GLOBAL_INDEX = ArrowFileIndex(files_list, cache_dir=cache_dir)
+# Global shared source pool (set before Pool creation; shared via fork COW)
+_SOURCE_POOL: Optional[list[np.ndarray]] = None
 
 
 def _generate_one_sample(args: tuple) -> Optional[dict]:
     """
     Generate one mixed multivariate sample.
     Args = (idx, n_variates, min_len, max_len, base_seed)
+
+    Picks source arrays from the pre-sampled _SOURCE_POOL (no file I/O).
     """
-    global _GLOBAL_INDEX
+    global _SOURCE_POOL
     idx, n_variates, min_len, max_len, base_seed = args
     rng = np.random.default_rng(base_seed + idx * 97 + 31)
 
@@ -492,15 +502,15 @@ def _generate_one_sample(args: tuple) -> Optional[dict]:
 
     n_sources_needed = n_variates + hidden_extra
 
-    # ── Sample source series ─────────────────────────────────────────────────
-    if _GLOBAL_INDEX is None or _GLOBAL_INDEX.total_rows == 0:
+    # ── Sample source series from pre-built pool ─────────────────────────────
+    if _SOURCE_POOL is None or len(_SOURCE_POOL) == 0:
         return None
 
-    source_arrays = _GLOBAL_INDEX.sample_target_arrays(
-        n_sources_needed, rng, min_len=max(32, T // 2), max_len=T * 4
-    )
-    if len(source_arrays) < max(1, n_sources_needed // 2):
-        return None  # Not enough data
+    pool_size = len(_SOURCE_POOL)
+    source_arrays = [
+        _SOURCE_POOL[int(rng.integers(0, pool_size))]
+        for _ in range(n_sources_needed)
+    ]
 
     # Align all sources to length T
     source_arrays = _align_lengths(source_arrays, T, rng)
@@ -584,6 +594,28 @@ def main() -> None:
 
     logger.info(f"Total rows available: {index.total_rows:,}")
 
+    # ── Pre-sample source pool (main process, sequential I/O) ────────────────
+    # Pool size: enough diversity for mixing, but bounded to avoid excess memory.
+    pool_size = min(200_000, index.total_rows, args.num_samples * 2)
+    logger.info(f"Pre-sampling source pool of {pool_size:,} arrays ...")
+    t_pool = time.time()
+    pool_rng = np.random.default_rng(args.seed + 777)
+    source_pool = index.batch_sample_pool(
+        pool_size, pool_rng, min_len=args.min_len, max_len=args.max_len * 4
+    )
+    # Free index memory — no longer needed
+    del index
+    logger.info(
+        f"Source pool ready: {len(source_pool):,} arrays in {time.time() - t_pool:.1f}s"
+    )
+
+    if not source_pool:
+        raise ValueError("Failed to sample any source arrays from input data.")
+
+    # Set global pool before forking so workers inherit via COW
+    global _SOURCE_POOL
+    _SOURCE_POOL = source_pool
+
     # ── Distribute samples across dimensions ─────────────────────────────────
     n_dims = args.max_variates
     base_per_dim = args.num_samples // n_dims
@@ -611,14 +643,10 @@ def main() -> None:
         ]
 
         if n_workers == 1:
-            # Single-process: initialize global index directly
-            _worker_init(arrow_files, cache_dir)
             raw_results = [_generate_one_sample(a) for a in task_args]
         else:
             chunk = max(1, n_samples // (n_workers * 8))
-            with Pool(processes=n_workers,
-                      initializer=_worker_init,
-                      initargs=(arrow_files, cache_dir)) as pool:
+            with Pool(processes=n_workers) as pool:
                 raw_results = list(pool.imap(_generate_one_sample, task_args,
                                              chunksize=chunk))
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import logging
 import math
+import shutil
 import sys
 import time
 from functools import partial
@@ -25,6 +26,7 @@ from multiprocessing import Pool, cpu_count
 from pathlib import Path
 from typing import Optional
 
+import datasets as hf_datasets
 import numpy as np
 
 # Allow running from any working directory
@@ -430,6 +432,9 @@ def main() -> None:
     samples_per_dim = [base_per_dim + (1 if i < remainder else 0)
                        for i in range(n_dims)]
 
+    # Chunk size for incremental saving (avoids OOM on large runs)
+    SAVE_CHUNK_SIZE = 50_000
+
     total_generated = 0
     for dim_idx, n_variates in enumerate(range(1, n_dims + 1)):
         n_samples = samples_per_dim[dim_idx]
@@ -443,40 +448,104 @@ def main() -> None:
         logger.info(f"[dim={n_variates}] Generating {n_samples} samples → {output_dir}")
         t0 = time.time()
 
-        # Seed offset per dimension so samples don't repeat
         base_seed = args.seed + dim_idx * 1_000_000
-
         task_args = [
             (i, n_variates, args.min_len, args.max_len, base_seed)
             for i in range(n_samples)
         ]
 
-        if n_workers == 1:
-            records = [_generate_one_sample(a) for a in task_args]
+        if n_samples <= SAVE_CHUNK_SIZE:
+            # Small run: original in-memory path
+            if n_workers == 1:
+                records = [_generate_one_sample(a) for a in task_args]
+            else:
+                chunk = max(1, n_samples // (n_workers * 8))
+                with Pool(processes=n_workers) as pool:
+                    records = list(pool.imap(_generate_one_sample, task_args,
+                                             chunksize=chunk))
+
+            elapsed = time.time() - t0
+            logger.info(f"  Generated {len(records)} samples in {elapsed:.1f}s "
+                        f"({len(records)/elapsed:.0f} samples/s)")
+
+            logger.info(f"  Saving to {output_dir} ...")
+            save_as_hf_dataset(records, output_dir, n_variates)
+
+            stats = compute_dataset_statistics(records, n_variates)
+            print_statistics(stats)
+            save_statistics_summary(stats, output_dir)
+            n_plot = min(10, n_samples)
+            plot_samples(records, n_variates, output_dir, n_plot=n_plot)
+            plot_correlation_matrices(records, n_variates, output_dir, n_plot=n_plot)
+            total_generated += len(records)
         else:
-            chunk = max(1, n_samples // (n_workers * 8))
-            with Pool(processes=n_workers) as pool:
-                records = list(pool.imap(_generate_one_sample, task_args,
-                                         chunksize=chunk))
+            # Large run: chunked generation + save to avoid OOM
+            from common_utils import make_hf_features
+            features = make_hf_features(n_variates)
+            imap_chunk = max(1, n_samples // (n_workers * 8))
+            shard_dirs: list[Path] = []
+            stats_sample: list[dict] = []
+            n_generated = 0
 
-        elapsed = time.time() - t0
-        logger.info(f"  Generated {len(records)} samples in {elapsed:.1f}s "
-                    f"({len(records)/elapsed:.0f} samples/s)")
+            def _flush_shard(batch: list[dict]) -> None:
+                nonlocal n_generated
+                shard_dir = output_dir / f"_shard_{len(shard_dirs):04d}"
+                save_as_hf_dataset(batch, shard_dir, n_variates)
+                shard_dirs.append(shard_dir)
+                n_generated += len(batch)
+                logger.info(f"  Saved shard {len(shard_dirs)} "
+                            f"({len(batch)} samples), total: {n_generated}/{n_samples}")
 
-        # Save as HuggingFace DatasetDict
-        logger.info(f"  Saving to {output_dir} ...")
-        save_as_hf_dataset(records, output_dir, n_variates)
+            batch: list[dict] = []
 
-        # Statistics and plots
-        stats = compute_dataset_statistics(records, n_variates)
-        print_statistics(stats)
-        save_statistics_summary(stats, output_dir)
+            if n_workers == 1:
+                gen = (_generate_one_sample(a) for a in task_args)
+            else:
+                pool = Pool(processes=n_workers)
+                gen = pool.imap(_generate_one_sample, task_args, chunksize=imap_chunk)
 
-        n_plot = min(10, n_samples)
-        plot_samples(records, n_variates, output_dir, n_plot=n_plot)
-        plot_correlation_matrices(records, n_variates, output_dir, n_plot=n_plot)
+            for result in gen:
+                batch.append(result)
+                if len(stats_sample) < 2000:
+                    stats_sample.append(result)
+                if len(batch) >= SAVE_CHUNK_SIZE:
+                    _flush_shard(batch)
+                    batch = []
 
-        total_generated += len(records)
+            if batch:
+                _flush_shard(batch)
+                batch = []
+
+            if n_workers > 1:
+                pool.close()
+                pool.join()
+
+            elapsed = time.time() - t0
+            logger.info(f"  Generated {n_generated} samples in {elapsed:.1f}s "
+                        f"({n_generated / max(elapsed, 0.1):.0f} samples/s)")
+
+            # Concatenate shards into final dataset (memory-mapped, low RAM)
+            logger.info(f"  Concatenating {len(shard_dirs)} shards → {output_dir} ...")
+            shard_datasets = [
+                hf_datasets.load_from_disk(str(d))["train"]
+                for d in shard_dirs
+            ]
+            combined = hf_datasets.concatenate_datasets(shard_datasets)
+            hf_datasets.DatasetDict({"train": combined}).save_to_disk(str(output_dir))
+
+            # Clean up shard directories
+            for d in shard_dirs:
+                shutil.rmtree(d)
+
+            # Stats + plots from sampled subset
+            stats = compute_dataset_statistics(stats_sample, n_variates)
+            print_statistics(stats)
+            save_statistics_summary(stats, output_dir)
+            n_plot = min(10, len(stats_sample))
+            plot_samples(stats_sample, n_variates, output_dir, n_plot=n_plot)
+            plot_correlation_matrices(stats_sample, n_variates, output_dir, n_plot=n_plot)
+            total_generated += n_generated
+
         logger.info(f"  Saved. Total so far: {total_generated}")
 
     logger.info(f"Done. Total samples generated: {total_generated}")
