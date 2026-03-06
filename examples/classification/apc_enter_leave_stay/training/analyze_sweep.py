@@ -55,10 +55,62 @@ def load_results(csv_path: str | Path):
     return df
 
 
+def _parse_mixed_column_csv(csv_path: Path) -> "pd.DataFrame":
+    """Parse CSV with mixed per-class F1 columns (Phase E cross-setting).
+
+    Phase E writes results for Settings 1/2/3 in one file. Setting 1 has 5
+    per-class F1 columns, Settings 2/3 have 3 different columns. When new
+    columns are appended mid-file without rewriting the header, pandas chokes.
+
+    This parser reads the CSV line-by-line, detects all unique column names
+    across all rows, and builds a proper DataFrame.
+    """
+    import pandas as pd
+    import csv as csvmod
+    from io import StringIO
+
+    rows = []
+    all_fieldnames = []
+
+    with open(csv_path) as f:
+        lines = f.readlines()
+
+    if not lines:
+        return pd.DataFrame()
+
+    # Parse header
+    header_reader = csvmod.reader(StringIO(lines[0]))
+    header = next(header_reader)
+    all_fieldnames = list(header)
+
+    for line_num, line in enumerate(lines[1:], start=2):
+        line = line.strip()
+        if not line:
+            continue
+
+        reader = csvmod.reader(StringIO(line))
+        fields = next(reader)
+
+        row = {}
+        for i, val in enumerate(fields):
+            if i < len(all_fieldnames):
+                row[all_fieldnames[i]] = val
+            else:
+                # Extra column beyond header — assign positional name
+                col_name = f"_extra_{i}"
+                if col_name not in all_fieldnames:
+                    all_fieldnames.append(col_name)
+                row[col_name] = val
+
+        rows.append(row)
+
+    df = pd.DataFrame(rows, columns=all_fieldnames)
+    return df
+
+
 def merge_phase_results(sweep_dir: str | Path) -> "pd.DataFrame":
     """Merge all per-phase result CSVs (results_A.csv, results_B.csv, etc.)."""
     import pandas as pd
-    import glob as globmod
 
     sweep_dir = Path(sweep_dir)
     csv_files = sorted(sweep_dir.glob("results_*.csv"))
@@ -74,10 +126,10 @@ def merge_phase_results(sweep_dir: str | Path) -> "pd.DataFrame":
         except pd.errors.ParserError:
             # Handle CSVs with mixed column counts (e.g., Phase E with
             # different label settings producing different per-class F1 columns)
-            logger.warning("  %s: mixed columns, using python engine with skip", f.name)
+            logger.warning("  %s: mixed columns, parsing line-by-line", f.name)
             try:
-                df = pd.read_csv(f, engine="python", on_bad_lines="warn")
-                logger.info("  %s: %d rows (recovered)", f.name, len(df))
+                df = _parse_mixed_column_csv(f)
+                logger.info("  %s: %d rows (recovered via line-by-line parse)", f.name, len(df))
                 dfs.append(df)
             except Exception:
                 logger.warning("Failed to read %s", f, exc_info=True)
@@ -87,8 +139,9 @@ def merge_phase_results(sweep_dir: str | Path) -> "pd.DataFrame":
     merged = pd.concat(dfs, ignore_index=True)
     merged = merged.drop_duplicates(subset=["exp_id"], keep="last")
     merged = merged.dropna(subset=["f1_macro"])
-    merged["f1_macro"] = merged["f1_macro"].astype(float)
-    merged["accuracy"] = merged["accuracy"].astype(float)
+    merged["f1_macro"] = pd.to_numeric(merged["f1_macro"], errors="coerce")
+    merged["accuracy"] = pd.to_numeric(merged["accuracy"], errors="coerce")
+    merged = merged.dropna(subset=["f1_macro", "accuracy"])
 
     # Save merged file
     merged_path = sweep_dir / "sweep_results.csv"
@@ -199,65 +252,97 @@ def plot_channel_comparison(df, output_path: Path) -> None:
 
 
 def generate_report(df, output_dir: Path) -> None:
-    """Generate comprehensive text report."""
+    """Generate comprehensive text report.
+
+    Primary metric: Accuracy. Sub-metric: F1 macro.
+    """
     lines = []
     lines.append("=" * 70)
     lines.append("SWEEP ANALYSIS REPORT")
     lines.append("=" * 70)
     lines.append(f"Total experiments: {len(df)}")
     lines.append(f"Phases: {sorted(df['phase'].unique().tolist())}")
+    if "label_setting" in df.columns:
+        settings = sorted(df["label_setting"].dropna().unique().tolist())
+        lines.append(f"Label settings: {settings}")
     lines.append("")
 
-    # Overall best
-    best_idx = df["f1_macro"].idxmax()
+    # Overall best by ACCURACY (primary metric)
+    best_idx = df["accuracy"].idxmax()
     best = df.loc[best_idx]
-    lines.append("OVERALL BEST:")
+    lines.append("OVERALL BEST (by Accuracy):")
     lines.append(f"  Exp ID: {best['exp_id']}")
-    lines.append(f"  F1 Macro: {best['f1_macro']:.4f}")
-    lines.append(f"  Accuracy: {best['accuracy']:.4f}")
+    lines.append(f"  Accuracy: {best['accuracy']:.4f}  (primary)")
+    lines.append(f"  F1 Macro: {best['f1_macro']:.4f}  (sub-metric)")
     lines.append(f"  Layer: L{best['layer']}")
     lines.append(f"  Classifier: {best['classifier_type']}/{best['classifier_name']}")
     lines.append(f"  Context: {best['context_name']}")
     lines.append(f"  Channels: {best['channel_name']}")
+    if "label_setting" in best:
+        lines.append(f"  Label Setting: {int(best['label_setting'])}")
     lines.append("")
 
-    # Per-phase summary
-    if "phase" in df.columns:
-        lines.append("PER-PHASE SUMMARY:")
+    # Per-setting summary (if multiple settings)
+    if "label_setting" in df.columns and df["label_setting"].nunique() > 1:
+        lines.append("PER-SETTING SUMMARY (by Accuracy):")
         lines.append("-" * 70)
-        for phase in sorted(df["phase"].unique()):
-            pdf = df[df["phase"] == phase]
-            best_row = pdf.loc[pdf["f1_macro"].idxmax()]
+        for setting in sorted(df["label_setting"].dropna().unique()):
+            sdf = df[df["label_setting"] == setting]
+            best_row = sdf.loc[sdf["accuracy"].idxmax()]
             lines.append(
-                f"  Phase {phase}: {len(pdf):4d} exps  "
-                f"Best F1={best_row['f1_macro']:.4f}  "
+                f"  Setting {int(setting)}: {len(sdf):4d} exps  "
+                f"Best Acc={best_row['accuracy']:.4f}  F1={best_row['f1_macro']:.4f}  "
                 f"({best_row['classifier_type']}/{best_row['classifier_name']}, "
-                f"L{best_row['layer']}, {best_row.get('context_name', 'N/A')}, "
-                f"{best_row.get('channel_name', 'N/A')})"
+                f"L{best_row['layer']})"
             )
         lines.append("")
 
-    # Top 10
-    lines.append("TOP 10 RESULTS:")
+    # Per-phase summary
+    if "phase" in df.columns:
+        lines.append("PER-PHASE SUMMARY (by Accuracy):")
+        lines.append("-" * 70)
+        for phase in sorted(df["phase"].unique()):
+            pdf = df[df["phase"] == phase]
+            best_row = pdf.loc[pdf["accuracy"].idxmax()]
+            setting_info = ""
+            if "label_setting" in best_row:
+                setting_info = f", S{int(best_row['label_setting'])}"
+            lines.append(
+                f"  Phase {phase}: {len(pdf):4d} exps  "
+                f"Best Acc={best_row['accuracy']:.4f}  F1={best_row['f1_macro']:.4f}  "
+                f"({best_row['classifier_type']}/{best_row['classifier_name']}, "
+                f"L{best_row['layer']}, {best_row.get('context_name', 'N/A')}, "
+                f"{best_row.get('channel_name', 'N/A')}{setting_info})"
+            )
+        lines.append("")
+
+    # Top 10 by ACCURACY
+    lines.append("TOP 10 RESULTS (by Accuracy):")
     lines.append("-" * 70)
-    top10 = df.nlargest(10, "f1_macro")
+    top10 = df.nlargest(10, "accuracy")
     for _, row in top10.iterrows():
+        setting_info = f" S{int(row['label_setting'])}" if "label_setting" in row else ""
         lines.append(
-            f"  {row['exp_id']:50s}  F1={row['f1_macro']:.4f}  Acc={row['accuracy']:.4f}"
+            f"  {row['exp_id']:50s}  Acc={row['accuracy']:.4f}  "
+            f"F1={row['f1_macro']:.4f}{setting_info}"
         )
     lines.append("")
 
-    # Best per factor
+    # Best per factor (by accuracy)
     for factor in ["layer", "classifier_name", "context_name", "channel_name"]:
         if factor not in df.columns:
             continue
-        lines.append(f"BEST PER {factor.upper()}:")
+        lines.append(f"BEST PER {factor.upper()} (by Accuracy):")
         lines.append("-" * 70)
-        best_per = df.loc[df.groupby(factor)["f1_macro"].idxmax()].sort_values("f1_macro", ascending=False)
+        best_per = df.loc[df.groupby(factor)["accuracy"].idxmax()].sort_values(
+            "accuracy", ascending=False
+        )
         for _, row in best_per.iterrows():
             lines.append(
-                f"  {str(row[factor]):25s}  F1={row['f1_macro']:.4f}  "
-                f"({row['classifier_type']}/{row['classifier_name']}, {row.get('context_name', 'N/A')})"
+                f"  {str(row[factor]):25s}  Acc={row['accuracy']:.4f}  "
+                f"F1={row['f1_macro']:.4f}  "
+                f"({row['classifier_type']}/{row['classifier_name']}, "
+                f"{row.get('context_name', 'N/A')})"
             )
         lines.append("")
 

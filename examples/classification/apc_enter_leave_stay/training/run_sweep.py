@@ -912,23 +912,51 @@ def load_completed_ids(results_csv: Path) -> set[str]:
 
 
 def append_result_csv(result: dict, output_path: Path) -> None:
-    """Append a single result row to CSV."""
+    """Append a single result row to CSV.
+
+    Handles Phase E's mixed-column issue: when experiments span multiple
+    label settings, per-class F1 column names differ (f1_Enter_New vs f1_Enter).
+    If new columns are discovered, the CSV is rewritten with the expanded header.
+    """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     file_exists = output_path.exists()
 
     fieldnames = list(result.keys())
+    needs_rewrite = False
+
     if file_exists:
         with open(output_path) as f:
             reader = csv.DictReader(f)
             existing_fields = reader.fieldnames or []
         new_fields = [k for k in result.keys() if k not in existing_fields]
-        fieldnames = list(existing_fields) + new_fields
+        if new_fields:
+            # New columns discovered (e.g., switching label settings mid-phase).
+            # Must rewrite the entire CSV with expanded header.
+            fieldnames = list(existing_fields) + new_fields
+            needs_rewrite = True
+        else:
+            fieldnames = list(existing_fields)
 
-    with open(output_path, "a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
-        if not file_exists:
+    if needs_rewrite:
+        # Read existing rows, rewrite with expanded header
+        existing_rows = []
+        with open(output_path) as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                existing_rows.append(row)
+
+        with open(output_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
             writer.writeheader()
-        writer.writerow(result)
+            for row in existing_rows:
+                writer.writerow(row)
+            writer.writerow(result)
+    else:
+        with open(output_path, "a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+            if not file_exists:
+                writer.writeheader()
+            writer.writerow(result)
 
 
 # ============================================================================
