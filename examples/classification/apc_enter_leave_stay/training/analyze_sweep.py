@@ -139,8 +139,19 @@ def merge_phase_results(sweep_dir: str | Path) -> "pd.DataFrame":
     merged = pd.concat(dfs, ignore_index=True)
     merged = merged.drop_duplicates(subset=["exp_id"], keep="last")
     merged = merged.dropna(subset=["f1_macro"])
-    merged["f1_macro"] = pd.to_numeric(merged["f1_macro"], errors="coerce")
-    merged["accuracy"] = pd.to_numeric(merged["accuracy"], errors="coerce")
+
+    # Ensure numeric types for all metric/config columns (mixed-column CSV
+    # parser returns strings; pd.read_csv auto-detects types → mixed after concat)
+    numeric_cols = [
+        "layer", "context_before", "context_after", "label_setting",
+        "lr", "dropout", "epochs", "accuracy", "f1_macro", "f1_weighted",
+        "precision_macro", "recall_macro", "roc_auc", "n_samples",
+        "n_channels", "time_sec",
+    ]
+    for col in numeric_cols:
+        if col in merged.columns:
+            merged[col] = pd.to_numeric(merged[col], errors="coerce")
+
     merged = merged.dropna(subset=["f1_macro", "accuracy"])
 
     # Save merged file
@@ -256,6 +267,8 @@ def generate_report(df, output_dir: Path) -> None:
 
     Primary metric: Accuracy. Sub-metric: F1 macro.
     """
+    import pandas as pd
+
     lines = []
     lines.append("=" * 70)
     lines.append("SWEEP ANALYSIS REPORT")
@@ -263,6 +276,7 @@ def generate_report(df, output_dir: Path) -> None:
     lines.append(f"Total experiments: {len(df)}")
     lines.append(f"Phases: {sorted(df['phase'].unique().tolist())}")
     if "label_setting" in df.columns:
+        df["label_setting"] = pd.to_numeric(df["label_setting"], errors="coerce")
         settings = sorted(df["label_setting"].dropna().unique().tolist())
         lines.append(f"Label settings: {settings}")
     lines.append("")

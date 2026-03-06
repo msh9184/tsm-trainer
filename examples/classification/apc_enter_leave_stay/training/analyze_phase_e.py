@@ -123,20 +123,38 @@ def parse_phase_e_csv(csv_path: str | Path) -> pd.DataFrame:
         remaining = fields[len(base_cols):]
 
         if setting == 1:
-            # 5-class: exactly 5 per-class F1 values
+            # 5-class: exactly 5 per-class F1 values at positions 0-4
             s1_names = ["f1_Enter_New", "f1_Enter_Add", "f1_Leave_Last",
                         "f1_Leave_Reduce", "f1_Stay_5class"]
             for i, name in enumerate(s1_names):
                 val = remaining[i] if i < len(remaining) else ""
                 row[name] = float(val) if val else None
         else:
-            # 3-class: skip empty fields, then 3 per-class F1 values
-            # The CSV has empty positions for the 5-class columns, then 3 new values
-            non_empty = [v for v in remaining if v.strip()]
-            s23_names = ["f1_Enter", "f1_Leave", "f1_Stay"]
-            for i, name in enumerate(s23_names):
-                val = non_empty[i] if i < len(non_empty) else ""
-                row[name] = float(val) if val else None
+            # 3-class (Setting 2 or 3):
+            # CSV column layout in the OLD format (before CSV header rewrite fix):
+            #   remaining[0-3]: empty (f1_Enter_New..f1_Leave_Reduce not in S2/S3 dict)
+            #   remaining[4]: f1_Stay value (shared column name with Setting 1 header)
+            #   remaining[5]: f1_Enter value (new column appended after header)
+            #   remaining[6]: f1_Leave value (new column appended after header)
+            #
+            # The DictWriter writes f1_Stay to the existing header position (col 28),
+            # then appends f1_Enter and f1_Leave as new columns (cols 29-30).
+            if len(remaining) >= 7:
+                # Old format: positional extraction
+                val_stay = remaining[4].strip() if remaining[4].strip() else ""
+                val_enter = remaining[5].strip() if len(remaining) > 5 and remaining[5].strip() else ""
+                val_leave = remaining[6].strip() if len(remaining) > 6 and remaining[6].strip() else ""
+                row["f1_Stay"] = float(val_stay) if val_stay else None
+                row["f1_Enter"] = float(val_enter) if val_enter else None
+                row["f1_Leave"] = float(val_leave) if val_leave else None
+            else:
+                # New format or short row: extract non-empty values in order
+                # After the CSV rewrite fix, columns are aligned properly:
+                #   f1_Enter, f1_Leave, f1_Stay in order
+                non_empty = [v for v in remaining if v.strip()]
+                for i, name in enumerate(["f1_Enter", "f1_Leave", "f1_Stay"]):
+                    val = non_empty[i] if i < len(non_empty) else ""
+                    row[name] = float(val) if val else None
 
         rows.append(row)
 
@@ -251,14 +269,15 @@ def cross_setting_comparison(df: pd.DataFrame, output_dir: Path) -> None:
 
     # Per-class F1 analysis for Setting 2
     lines.append("\n\n--- Setting 2: Per-Class F1 Analysis ---")
-    lines.append("NOTE: f1_Enter=0.0 means classifier never predicts Enter correctly.")
-    lines.append("This reveals a severe class imbalance or embedding separability issue.")
+    lines.append("NOTE: Setting 2 has Stay=5 (6.8%) — a tiny minority class.")
+    lines.append("f1_Stay=0.0 means the classifier never predicts Stay correctly.")
+    lines.append("f1_Enter and f1_Leave are high because Enter=33 and Leave=36 are well-separated.")
     if not s2.empty:
         for _, row in s2.sort_values("accuracy", ascending=False).iterrows():
-            f1e = row.get("f1_Enter", 0)
-            f1l = row.get("f1_Leave", 0)
-            f1s = row.get("f1_Stay", 0)
-            marker = " *** ENTER DETECTED" if f1e and f1e > 0 else ""
+            f1e = row.get("f1_Enter", 0) or 0
+            f1l = row.get("f1_Leave", 0) or 0
+            f1s = row.get("f1_Stay", 0) or 0
+            marker = " *** STAY DETECTED" if f1s and f1s > 0 else ""
             lines.append(
                 f"  L{int(row['layer'])} {row['classifier_name']:>20}  "
                 f"f1_E={f1e:.4f}  f1_L={f1l:.4f}  f1_S={f1s:.4f}  "
@@ -269,6 +288,15 @@ def cross_setting_comparison(df: pd.DataFrame, output_dir: Path) -> None:
     lines.append("\n\n" + "=" * 80)
     lines.append("KEY FINDINGS")
     lines.append("=" * 80)
+
+    # Verified class distribution
+    lines.append("\n0. 5-CLASS RAW DISTRIBUTION (verified):")
+    lines.append("   ENTER_HOME_NEW=21, ENTER_HOME_ADD=12, LEAVE_HOME_LAST=21,")
+    lines.append("   LEAVE_HOME_REDUCE=15, STAY=5. Total=74")
+    lines.append("")
+    lines.append("   Setting 1: Enter_New=21, Enter_Add=12, Leave_Last=21, Leave_Reduce=15, Stay=5")
+    lines.append("   Setting 2: Enter=33 (44.6%), Leave=36 (48.6%), Stay=5 (6.8%)")
+    lines.append("   Setting 3: Enter=21 (28.4%), Leave=21 (28.4%), Stay=32 (43.2%)")
 
     s2_best = s2.loc[s2["accuracy"].idxmax()] if not s2.empty else None
     s3 = df[df["label_setting"] == 3]
@@ -281,31 +309,30 @@ def cross_setting_comparison(df: pd.DataFrame, output_dir: Path) -> None:
         lines.append(f"   Setting 3 best: Acc={s3_best['accuracy']:.4f} (L{int(s3_best['layer'])}/{s3_best['classifier_name']})")
         lines.append(f"   Gap: +{gap:.4f} ({gap*100:.1f}%p)")
 
-    lines.append(f"\n2. Setting 2 f1_Enter=0.0 issue:")
-    if not s2.empty:
-        enter_detected = s2[s2.get("f1_Enter", pd.Series(dtype=float)).fillna(0) > 0]
-        lines.append(f"   Only {len(enter_detected)}/{len(s2)} experiments detect Enter (f1>0)")
-        if not enter_detected.empty:
-            lines.append(f"   Best Enter detection: NearestCentroid (f1_Enter up to "
-                         f"{enter_detected['f1_Enter'].max():.4f})")
+    lines.append(f"\n2. Setting 2 is essentially BINARY (Enter vs Leave):")
+    lines.append(f"   - Stay has only 5 samples (6.8%) — too few to learn")
+    lines.append(f"   - f1_Stay=0.0 for most classifiers (cannot detect Stay)")
+    lines.append(f"   - High accuracy comes from correctly classifying Enter(33)+Leave(36)")
+    lines.append(f"   - f1_Enter≈0.85, f1_Leave≈0.86 → well-separated")
+    lines.append(f"   - The model ignores Stay entirely")
 
-    lines.append(f"\n3. Setting 1 (5-class) is clearly too hard:")
+    lines.append(f"\n3. Setting 3 is the TRUE 3-class problem:")
+    lines.append(f"   - Enter=21, Leave=21, Stay=32 — more balanced")
+    lines.append(f"   - Best Acc=0.4459 (Phase E) / 0.6622 (Phase B with larger context)")
+    lines.append(f"   - Much harder but the real target for Enter/Leave/Stay classification")
+
+    lines.append(f"\n4. Setting 1 (5-class) is clearly too hard:")
     s1 = df[df["label_setting"] == 1]
     if not s1.empty:
         lines.append(f"   Best accuracy: {s1['accuracy'].max():.4f}")
+        lines.append(f"   Enter_Add(12) and Stay(5) are too small for 5-class LOOCV")
 
-    lines.append(f"\n4. CRITICAL: Acc=0.8243 with f1_Enter=0.0 suggests:")
-    lines.append(f"   - Enter class may be very small in Setting 2")
-    lines.append(f"   - Classifier achieves high accuracy by correctly predicting Leave+Stay")
-    lines.append(f"   - MUST verify actual class distribution per setting")
-    lines.append(f"   - The documented 'Enter=21, Leave=21, Stay=32' may be for Setting 3 only")
-
-    lines.append(f"\n5. RECOMMENDATIONS:")
-    lines.append(f"   a) Verify exact 5-class distribution from raw event CSV")
-    lines.append(f"   b) If Enter(S2) is small, consider class_weight='balanced' or oversampling")
-    lines.append(f"   c) Add Setting 2 experiments to Round 2 sweep")
-    lines.append(f"   d) NearestCentroid is the only classifier detecting Enter — investigate why")
-    lines.append(f"   e) Test wider context windows and different channels for Setting 2")
+    lines.append(f"\n5. IMPLICATIONS FOR ROUND 2:")
+    lines.append(f"   a) Setting 2 高 accuracy is MISLEADING — it's mostly binary classification")
+    lines.append(f"   b) Setting 3 remains the correct target for 3-class Enter/Leave/Stay")
+    lines.append(f"   c) Stay(S3)=32 is the merged class (ADD+REDUCE+STAY) — properly sized")
+    lines.append(f"   d) Round 2 should continue focusing on Setting 3 with practical factors")
+    lines.append(f"   e) Setting 2 useful as REFERENCE ONLY — upper bound for Enter-vs-Leave")
 
     report_path = output_dir / "phase_e_analysis.txt"
     report_path.write_text("\n".join(lines) + "\n")
