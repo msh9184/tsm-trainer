@@ -116,6 +116,24 @@ CONTEXT_CONFIGS = {
     "future_0_4": (0, 4),    # 5 min
     "future_0_8": (0, 8),    # 9 min
     "future_0_16": (0, 16),  # 17 min
+    # Extended (Round 2 — exploring beyond 64)
+    "sym_96_96": (96, 96),     # 193 min
+    "sym_128_128": (128, 128), # 257 min
+    "past_32_0": (32, 0),      # 33 min
+    "past_64_0": (64, 0),      # 65 min
+    "asym_16_8": (16, 8),      # 25 min
+    "asym_32_16": (32, 16),    # 49 min
+    "asym_64_32": (64, 32),    # 97 min
+    # Fine-grained (Round 2 — filling gaps in 1-16 range)
+    "sym_5_5": (5, 5),         # 11 min
+    "sym_7_7": (7, 7),         # 15 min
+    "sym_10_10": (10, 10),     # 21 min
+    "sym_14_14": (14, 14),     # 29 min
+    "sym_20_20": (20, 20),     # 41 min
+    "asym_12_4": (12, 4),      # 17 min
+    "asym_4_12": (4, 12),      # 17 min
+    "asym_8_16": (8, 16),      # 25 min
+    "past_12_0": (12, 0),      # 13 min
 }
 
 # Channel subsets — informed by prior experiments:
@@ -191,14 +209,17 @@ class SweepExperiment:
     dropout: float = 0.5
     epochs: int = 50
     hidden_dims: list[int] = field(default_factory=lambda: [128, 64])
+    add_time_features: bool = False
+    seed_override: int | None = None
 
     @property
     def embedding_key(self) -> str:
         """Key for embedding cache: same key → same embeddings."""
-        return f"L{self.layer}_ctx{self.context_name}_ch{self.channel_name}_s{self.label_setting}"
+        tf = "_tf" if self.add_time_features else ""
+        return f"L{self.layer}_ctx{self.context_name}_ch{self.channel_name}_s{self.label_setting}{tf}"
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "exp_id": self.exp_id,
             "phase": self.phase,
             "layer": self.layer,
@@ -214,6 +235,11 @@ class SweepExperiment:
             "epochs": self.epochs,
             "hidden_dims": str(self.hidden_dims),
         }
+        if self.add_time_features:
+            d["add_time_features"] = True
+        if self.seed_override is not None:
+            d["seed"] = self.seed_override
+        return d
 
 
 # ============================================================================
@@ -408,13 +434,310 @@ def generate_phase_F(label_setting: int = 3) -> list[SweepExperiment]:
     return experiments
 
 
+# ============================================================================
+# Round 2 — Focused on practical constraints (short context, few sensors)
+# Informed by Round 1 results + domain knowledge:
+#   - motion sensor is primary, contact and temp are supporting
+#   - Short context (1-16 min) is practical for event-based detection
+#   - Long context (48-128 min) tested for reference only
+#   - Layers: L0, L2, L3 confirmed good; L5 for neural; L1/L4 eliminated
+#   - Classifiers: RF, SVM, LogReg, NC, linear, mlp (GBT/ExtraTrees eliminated)
+# ============================================================================
+
+# Confirmed good factors from Round 1
+R2_LAYERS = [0, 2, 3, 5]
+R2_LAYERS_CORE = [0, 2, 3]  # Top 3 (L5 only for neural)
+R2_SKLEARN = ["random_forest", "svm", "logistic_regression", "nearest_centroid"]
+R2_ALL_CLF = R2_SKLEARN + ["linear", "mlp"]  # sklearn + neural
+
+# Fine-grained practical contexts (1-20 min range, filling gaps)
+R2_CONTEXTS_FINE = [
+    "sym_1_1", "sym_2_2", "sym_3_3", "sym_4_4", "sym_5_5",
+    "sym_6_6", "sym_7_7", "sym_8_8", "sym_10_10", "sym_12_12",
+    "sym_14_14", "sym_16_16", "sym_20_20",
+    "past_8_0", "past_12_0", "past_16_0",
+    "asym_4_8", "asym_8_4", "asym_12_4", "asym_4_12", "asym_8_16",
+]  # 21 contexts
+
+# Practical channels (motion-centric)
+R2_CHANNELS_MOTION = {
+    "motion_contact": CHANNEL_SUBSETS["motion_contact"],
+    "motion_only": CHANNEL_SUBSETS["motion_only"],
+    "motion_contact_temp1": CHANNEL_SUBSETS["motion_contact_temp1"],
+    "motion_power_contact": CHANNEL_SUBSETS["motion_power_contact"],
+}
+
+
+def _make_exp(phase, layer, ctx_name, ch_name, clf_type, clf_name,
+              label_setting=3, lr=0.001, dropout=0.5, epochs=50,
+              hidden_dims=None, add_time_features=False, seed_override=None):
+    """Helper to create a SweepExperiment with less boilerplate."""
+    ctx_b, ctx_a = CONTEXT_CONFIGS[ctx_name]
+    ch_list = CHANNEL_SUBSETS.get(ch_name) if ch_name != "all_6" else None
+    hid = hidden_dims or [128, 64]
+    tf_tag = "_tf" if add_time_features else ""
+    seed_tag = f"_s{seed_override}" if seed_override is not None else ""
+
+    if clf_type == "neural":
+        hp_tag = f"_lr{lr}_do{dropout}_ep{epochs}_h{'x'.join(map(str, hid))}" if clf_name == "mlp" else ""
+        exp_id = f"{phase}_{layer}_{ctx_name}_{ch_name}_neural_{clf_name}{hp_tag}{tf_tag}{seed_tag}"
+    else:
+        exp_id = f"{phase}_{layer}_{ctx_name}_{ch_name}_{clf_name}{tf_tag}{seed_tag}"
+
+    return SweepExperiment(
+        exp_id=exp_id, phase=phase, layer=layer,
+        classifier_type=clf_type, classifier_name=clf_name,
+        context_name=ctx_name, context_before=ctx_b, context_after=ctx_a,
+        channel_name=ch_name, channels=ch_list,
+        label_setting=label_setting, lr=lr, dropout=dropout,
+        epochs=epochs, hidden_dims=hid,
+        add_time_features=add_time_features,
+        seed_override=seed_override,
+    )
+
+
+def generate_phase_R2A(label_setting: int = 3) -> list[SweepExperiment]:
+    """R2-A: motion_contact × fine-grained contexts × all layers × all classifiers.
+
+    motion_contact is the best practical channel (Round 1: Acc=0.6216).
+    Fine-grained context sweep to find exact sweet spot.
+
+    4 layers × 21 contexts × 1 channel × 6 clf = 504 experiments.
+    Embedding groups: 84.
+    """
+    experiments = []
+    ch_name = "motion_contact"
+    for layer in R2_LAYERS:
+        for ctx_name in R2_CONTEXTS_FINE:
+            for clf in R2_SKLEARN:
+                experiments.append(_make_exp("R2A", layer, ctx_name, ch_name, "sklearn", clf, label_setting))
+            for head in ALL_HEADS:
+                experiments.append(_make_exp("R2A", layer, ctx_name, ch_name, "neural", head, label_setting))
+    return experiments
+
+
+def generate_phase_R2B(label_setting: int = 3) -> list[SweepExperiment]:
+    """R2-B: motion_only × fine-grained contexts × all layers × all classifiers.
+
+    motion_only was surprisingly good (Round 1: Acc=0.6081 with just 1 sensor).
+    Test if it generalizes across contexts.
+
+    4 layers × 21 contexts × 1 channel × 6 clf = 504 experiments.
+    Embedding groups: 84.
+    """
+    experiments = []
+    ch_name = "motion_only"
+    for layer in R2_LAYERS:
+        for ctx_name in R2_CONTEXTS_FINE:
+            for clf in R2_SKLEARN:
+                experiments.append(_make_exp("R2B", layer, ctx_name, ch_name, "sklearn", clf, label_setting))
+            for head in ALL_HEADS:
+                experiments.append(_make_exp("R2B", layer, ctx_name, ch_name, "neural", head, label_setting))
+    return experiments
+
+
+def generate_phase_R2C(label_setting: int = 3) -> list[SweepExperiment]:
+    """R2-C: motion_contact_temp1 + motion_power_contact + cross-channel comparison.
+
+    Test remaining practical channels, plus all_6/no_energy for reference.
+
+    Part 1: motion_contact_temp1 — 4 layers × 21 ctx × 6 clf = 504
+    Part 2: motion_power_contact — 3 layers × 10 ctx × 6 clf = 180
+    Part 3: all_6 + no_energy reference — 3 layers × 8 ctx × 2 ch × 6 clf = 288
+    Total: 972 experiments.
+    """
+    experiments = []
+
+    # Part 1: motion_contact_temp1 full sweep
+    for layer in R2_LAYERS:
+        for ctx_name in R2_CONTEXTS_FINE:
+            for clf in R2_SKLEARN:
+                experiments.append(_make_exp("R2C", layer, ctx_name, "motion_contact_temp1", "sklearn", clf, label_setting))
+            for head in ALL_HEADS:
+                experiments.append(_make_exp("R2C", layer, ctx_name, "motion_contact_temp1", "neural", head, label_setting))
+
+    # Part 2: motion_power_contact (less promising, test key contexts only)
+    key_contexts = ["sym_2_2", "sym_4_4", "sym_8_8", "sym_10_10", "sym_14_14",
+                    "sym_16_16", "past_16_0", "asym_4_8", "asym_8_4", "asym_8_16"]
+    for layer in R2_LAYERS_CORE:
+        for ctx_name in key_contexts:
+            for clf in R2_SKLEARN:
+                experiments.append(_make_exp("R2C", layer, ctx_name, "motion_power_contact", "sklearn", clf, label_setting))
+            for head in ALL_HEADS:
+                experiments.append(_make_exp("R2C", layer, ctx_name, "motion_power_contact", "neural", head, label_setting))
+
+    # Part 3: all_6 / no_energy reference (long contexts where all_6 was best)
+    ref_contexts = ["sym_2_2", "sym_8_8", "sym_16_16", "sym_48_48",
+                    "sym_64_64", "sym_96_96", "sym_128_128", "past_16_0"]
+    for layer in R2_LAYERS_CORE:
+        for ctx_name in ref_contexts:
+            for ch_name in ["all_6", "no_energy"]:
+                for clf in R2_SKLEARN:
+                    experiments.append(_make_exp("R2C", layer, ctx_name, ch_name, "sklearn", clf, label_setting))
+                for head in ALL_HEADS:
+                    experiments.append(_make_exp("R2C", layer, ctx_name, ch_name, "neural", head, label_setting))
+
+    return experiments
+
+
+def generate_phase_R2D(label_setting: int = 3) -> list[SweepExperiment]:
+    """R2-D: MLP hyperparameter sweep (L0, L2) with practical settings.
+
+    Phase D (Round 1) used sym_4_4+all_6 = wrong settings.
+    Re-sweep with motion_contact + correct contexts.
+
+    2 layers × 3 contexts × 2 channels × (5 lr × 4 dropout × 3 epochs × 4 hidden) = 2,880.
+    Embedding groups: 12 (very efficient — all classifiers share embeddings).
+    """
+    experiments = []
+    layers = [0, 2]
+    contexts = ["sym_2_2", "sym_8_8", "sym_16_16"]
+    channels = ["motion_contact", "motion_contact_temp1"]
+    lrs = [0.0001, 0.0005, 0.001, 0.005, 0.01]
+    dropouts = [0.0, 0.1, 0.3, 0.5]
+    epochs_list = [50, 100, 150]
+    hiddens = [[64], [128, 64], [256, 128], [256, 128, 64]]
+
+    for layer in layers:
+        for ctx_name in contexts:
+            for ch_name in channels:
+                for lr in lrs:
+                    for dropout in dropouts:
+                        for epochs in epochs_list:
+                            for hidden in hiddens:
+                                experiments.append(_make_exp(
+                                    "R2D", layer, ctx_name, ch_name,
+                                    "neural", "mlp", label_setting,
+                                    lr=lr, dropout=dropout, epochs=epochs,
+                                    hidden_dims=hidden,
+                                ))
+
+    return experiments
+
+
+def generate_phase_R2E(label_setting: int = 3) -> list[SweepExperiment]:
+    """R2-E: MLP hyperparameter sweep (L3, L5) with practical settings.
+
+    Same HP grid as R2-D but for L3 and L5.
+
+    2 layers × 3 contexts × 2 channels × 240 HP = 2,880.
+    Embedding groups: 12.
+    """
+    experiments = []
+    layers = [3, 5]
+    contexts = ["sym_2_2", "sym_8_8", "sym_16_16"]
+    channels = ["motion_contact", "motion_contact_temp1"]
+    lrs = [0.0001, 0.0005, 0.001, 0.005, 0.01]
+    dropouts = [0.0, 0.1, 0.3, 0.5]
+    epochs_list = [50, 100, 150]
+    hiddens = [[64], [128, 64], [256, 128], [256, 128, 64]]
+
+    for layer in layers:
+        for ctx_name in contexts:
+            for ch_name in channels:
+                for lr in lrs:
+                    for dropout in dropouts:
+                        for epochs in epochs_list:
+                            for hidden in hiddens:
+                                experiments.append(_make_exp(
+                                    "R2E", layer, ctx_name, ch_name,
+                                    "neural", "mlp", label_setting,
+                                    lr=lr, dropout=dropout, epochs=epochs,
+                                    hidden_dims=hidden,
+                                ))
+
+    return experiments
+
+
+def generate_phase_R2F(label_setting: int = 3) -> list[SweepExperiment]:
+    """R2-F: Time features + long context reference + multi-seed validation.
+
+    Part 1: Time features ON (hour_sin, hour_cos) — 162 experiments.
+    Part 2: Long context reference (48-128 min) with practical channels — 288 experiments.
+    Part 3: Multi-seed RF validation (top configs × 4 extra seeds) — 120 experiments.
+    Total: ~570 experiments.
+    """
+    experiments = []
+
+    # Part 1: Time features ON
+    tf_contexts = ["sym_2_2", "sym_4_4", "sym_8_8", "sym_16_16", "past_16_0", "asym_4_8"]
+    tf_channels = ["motion_contact", "motion_only", "motion_contact_temp1"]
+    for layer in R2_LAYERS_CORE:
+        for ctx_name in tf_contexts:
+            for ch_name in tf_channels:
+                for clf in R2_SKLEARN:
+                    experiments.append(_make_exp(
+                        "R2F", layer, ctx_name, ch_name, "sklearn", clf,
+                        label_setting, add_time_features=True,
+                    ))
+                for head in ALL_HEADS:
+                    experiments.append(_make_exp(
+                        "R2F", layer, ctx_name, ch_name, "neural", head,
+                        label_setting, add_time_features=True,
+                    ))
+
+    # Part 2: Long context reference (practical channels)
+    long_contexts = ["sym_48_48", "sym_64_64", "sym_96_96", "sym_128_128",
+                     "past_32_0", "past_64_0", "asym_32_16", "asym_64_32"]
+    long_channels = ["motion_contact", "motion_contact_temp1"]
+    for layer in R2_LAYERS_CORE:
+        for ctx_name in long_contexts:
+            for ch_name in long_channels:
+                for clf in R2_SKLEARN:
+                    experiments.append(_make_exp("R2F", layer, ctx_name, ch_name, "sklearn", clf, label_setting))
+                for head in ALL_HEADS:
+                    experiments.append(_make_exp("R2F", layer, ctx_name, ch_name, "neural", head, label_setting))
+
+    # Part 3: Multi-seed RF validation (top configs from Round 1)
+    top_configs = [
+        (3, "sym_8_8", "motion_contact"),
+        (2, "sym_8_8", "motion_contact"),
+        (0, "sym_2_2", "motion_contact"),
+        (3, "sym_2_2", "motion_contact"),
+        (3, "sym_4_4", "motion_only"),
+        (3, "sym_16_16", "motion_contact_temp1"),
+        (0, "sym_8_8", "motion_contact"),
+        (2, "sym_2_2", "motion_contact"),
+        (0, "sym_4_4", "motion_contact_temp1"),
+        (3, "sym_8_8", "motion_contact_temp1"),
+    ]
+    extra_seeds = [123, 456, 789, 2024]
+    for layer, ctx_name, ch_name in top_configs:
+        for seed in extra_seeds:
+            # RF with different seeds
+            experiments.append(_make_exp(
+                "R2F", layer, ctx_name, ch_name, "sklearn", "random_forest",
+                label_setting, seed_override=seed,
+            ))
+            # Neural MLP with different seeds
+            experiments.append(_make_exp(
+                "R2F", layer, ctx_name, ch_name, "neural", "mlp",
+                label_setting, seed_override=seed,
+            ))
+            # Neural linear with different seeds
+            experiments.append(_make_exp(
+                "R2F", layer, ctx_name, ch_name, "neural", "linear",
+                label_setting, seed_override=seed,
+            ))
+
+    return experiments
+
+
 PHASE_GENERATORS = {
+    # Round 1
     "A": generate_phase_A,
     "B": generate_phase_B,
     "C": generate_phase_C,
     "D": generate_phase_D,
     "E": generate_phase_E,
     "F": generate_phase_F,
+    # Round 2 (practical focus)
+    "R2A": generate_phase_R2A,
+    "R2B": generate_phase_R2B,
+    "R2C": generate_phase_R2C,
+    "R2D": generate_phase_R2D,
+    "R2E": generate_phase_R2E,
+    "R2F": generate_phase_R2F,
 }
 
 
@@ -439,6 +762,9 @@ def _load_data_for_experiment(
     data_cfg = raw_cfg.get("data", {})
     channels = exp.channels if exp.channels is not None else data_cfg.get("channels")
 
+    # Per-experiment time features override (R2F phase)
+    time_features = exp.add_time_features or data_cfg.get("add_time_features", False)
+
     preprocess_cfg = EventPreprocessConfig(
         sensor_csv=data_cfg.get("sensor_csv", ""),
         events_csv=data_cfg.get("events_csv", ""),
@@ -448,7 +774,7 @@ def _load_data_for_experiment(
         exclude_channels=data_cfg.get("exclude_channels", []),
         nan_threshold=data_cfg.get("nan_threshold", 0.3),
         label_setting=exp.label_setting,
-        add_time_features=data_cfg.get("add_time_features", False),
+        add_time_features=time_features,
     )
 
     return load_sensor_and_events(preprocess_cfg)
@@ -516,7 +842,8 @@ def run_experiment_group(
             t0 = time.time()
 
             if exp.classifier_type == "sklearn":
-                clf_factory = lambda s=seed, name=exp.classifier_name: build_sklearn_classifier(name, s)
+                exp_seed = exp.seed_override if exp.seed_override is not None else seed
+                clf_factory = lambda s=exp_seed, name=exp.classifier_name: build_sklearn_classifier(name, s)
                 metrics = run_loocv_sklearn(Z, event_labels, clf_factory, class_names)
             else:
                 metrics = run_loocv_neural(
@@ -728,7 +1055,7 @@ def main():
     parser.add_argument(
         "--phase", nargs="+", default=["A"],
         choices=list(PHASE_GENERATORS.keys()),
-        help="Phases to run (A/B/C/D/E/F). Each server runs one phase.",
+        help="Phases to run. Round 1: A-F. Round 2: R2A-R2F.",
     )
     parser.add_argument("--label-setting", type=int, default=3)
     parser.add_argument("--device", default="cuda")

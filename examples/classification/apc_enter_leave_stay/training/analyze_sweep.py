@@ -71,6 +71,16 @@ def merge_phase_results(sweep_dir: str | Path) -> "pd.DataFrame":
             df = pd.read_csv(f)
             logger.info("  %s: %d rows", f.name, len(df))
             dfs.append(df)
+        except pd.errors.ParserError:
+            # Handle CSVs with mixed column counts (e.g., Phase E with
+            # different label settings producing different per-class F1 columns)
+            logger.warning("  %s: mixed columns, using python engine with skip", f.name)
+            try:
+                df = pd.read_csv(f, engine="python", on_bad_lines="warn")
+                logger.info("  %s: %d rows (recovered)", f.name, len(df))
+                dfs.append(df)
+            except Exception:
+                logger.warning("Failed to read %s", f, exc_info=True)
         except Exception:
             logger.warning("Failed to read %s", f, exc_info=True)
 
