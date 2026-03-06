@@ -1,0 +1,224 @@
+"""Classification metrics for enter/leave/stay event detection.
+
+Supports binary and multiclass (3-class, 5-class) evaluation.
+Provides per-class precision/recall/F1, macro/weighted averages, ROC AUC,
+EER, and cross-validation aggregation utilities.
+
+Copied from apc_enter_leave/evaluation/metrics.py — already multiclass-ready.
+"""
+
+from __future__ import annotations
+
+import logging
+import math
+from dataclasses import dataclass, field
+
+import numpy as np
+from sklearn.metrics import (
+    accuracy_score,
+    auc as sklearn_auc,
+    confusion_matrix,
+    f1_score,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+    roc_curve,
+)
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class EventClassificationMetrics:
+    """Container for event classification metrics."""
+
+    accuracy: float
+    f1_macro: float
+    f1_weighted: float
+    f1_per_class: dict[str, float]
+    precision_macro: float
+    recall_macro: float
+    confusion_matrix: np.ndarray
+    n_samples: int
+    class_distribution: dict[str, int]
+    roc_auc: float = float("nan")
+    eer: float = float("nan")
+    eer_threshold: float = float("nan")
+    roc_fpr: np.ndarray | None = None
+    roc_tpr: np.ndarray | None = None
+    cv_method: str = ""
+    n_folds: int = 0
+
+    def summary(self, class_names: list[str] | None = None) -> str:
+        lines = [
+            "Event Classification Results",
+            "=" * 50,
+            f"  Accuracy:       {self.accuracy:.4f}",
+            f"  F1 (macro):     {self.f1_macro:.4f}",
+            f"  F1 (weighted):  {self.f1_weighted:.4f}",
+            f"  Precision:      {self.precision_macro:.4f}",
+            f"  Recall:         {self.recall_macro:.4f}",
+            f"  AUC:            {self.roc_auc:.4f}",
+            f"  EER:            {self.eer:.4f}",
+        ]
+
+        if self.cv_method:
+            lines.append(f"  CV method:      {self.cv_method} ({self.n_folds} folds)")
+
+        lines.append("")
+        lines.append("Per-Class F1:")
+        for cls_name, f1_val in self.f1_per_class.items():
+            lines.append(f"  {cls_name}: {f1_val:.4f}")
+
+        lines.append("")
+        lines.append("Confusion Matrix:")
+        n_classes = self.confusion_matrix.shape[0]
+        if class_names is None:
+            class_names = [str(i) for i in range(n_classes)]
+        header = "           " + "  ".join(f"{name:>7s}" for name in class_names)
+        lines.append(header)
+        for i in range(n_classes):
+            row_vals = "  ".join(f"{int(self.confusion_matrix[i, j]):7d}" for j in range(n_classes))
+            lines.append(f"  {class_names[i]:>7s}  {row_vals}")
+
+        lines.append("")
+        dist_str = ", ".join(f"{k}={v}" for k, v in self.class_distribution.items())
+        lines.append(f"  Samples: {self.n_samples} ({dist_str})")
+
+        return "\n".join(lines)
+
+    def to_dict(self) -> dict:
+        def _safe(v: float) -> float | None:
+            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                return None
+            return v
+
+        return {
+            "accuracy": float(self.accuracy),
+            "f1_macro": float(self.f1_macro),
+            "f1_weighted": float(self.f1_weighted),
+            "f1_per_class": {k: float(v) for k, v in self.f1_per_class.items()},
+            "precision_macro": float(self.precision_macro),
+            "recall_macro": float(self.recall_macro),
+            "roc_auc": _safe(float(self.roc_auc)),
+            "eer": _safe(float(self.eer)),
+            "eer_threshold": _safe(float(self.eer_threshold)),
+            "confusion_matrix": self.confusion_matrix.tolist(),
+            "n_samples": self.n_samples,
+            "class_distribution": self.class_distribution,
+            "cv_method": self.cv_method,
+            "n_folds": self.n_folds,
+        }
+
+
+def _compute_eer_and_roc(
+    y_true: np.ndarray,
+    y_prob: np.ndarray | None,
+) -> tuple[float, float, np.ndarray | None, np.ndarray | None, float]:
+    """Compute EER and ROC curve data for binary classification."""
+    nan = float("nan")
+    if y_prob is None:
+        return nan, nan, None, None, nan
+
+    unique_labels = np.unique(y_true)
+    if len(unique_labels) < 2:
+        return nan, nan, None, None, nan
+
+    fpr, tpr, thresholds = roc_curve(y_true, y_prob)
+    fnr = 1.0 - tpr
+
+    idx = np.nanargmin(np.abs(fpr - fnr))
+    eer = float((fpr[idx] + fnr[idx]) / 2.0)
+    eer_threshold = float(thresholds[idx]) if idx < len(thresholds) else 0.5
+
+    auc_score = float(sklearn_auc(fpr, tpr))
+
+    return eer, eer_threshold, fpr, tpr, auc_score
+
+
+def compute_event_metrics(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    y_prob: np.ndarray | None = None,
+    class_names: list[str] | None = None,
+) -> EventClassificationMetrics:
+    """Compute all classification metrics, auto-detecting binary vs multiclass."""
+    y_true = np.asarray(y_true, dtype=np.int64)
+    y_pred = np.asarray(y_pred, dtype=np.int64)
+
+    unique_classes = sorted(np.unique(np.concatenate([y_true, y_pred])).tolist())
+    n_classes = len(unique_classes)
+    is_binary = n_classes <= 2
+
+    if class_names is None:
+        class_names = [str(c) for c in unique_classes]
+
+    labels = unique_classes
+
+    acc = accuracy_score(y_true, y_pred)
+    f1_mac = f1_score(y_true, y_pred, average="macro", labels=labels, zero_division=0)
+    f1_wt = f1_score(y_true, y_pred, average="weighted", labels=labels, zero_division=0)
+    prec_mac = precision_score(y_true, y_pred, average="macro", labels=labels, zero_division=0)
+    rec_mac = recall_score(y_true, y_pred, average="macro", labels=labels, zero_division=0)
+
+    f1_per = f1_score(y_true, y_pred, average=None, labels=labels, zero_division=0)
+    f1_per_class = {}
+    for i, label in enumerate(labels):
+        name = class_names[label] if label < len(class_names) else str(label)
+        f1_per_class[name] = float(f1_per[i])
+
+    cm = confusion_matrix(y_true, y_pred, labels=labels)
+
+    unique, counts = np.unique(y_true, return_counts=True)
+    class_dist = {}
+    for u, c in zip(unique.tolist(), counts.tolist()):
+        name = class_names[u] if u < len(class_names) else str(u)
+        class_dist[name] = c
+
+    eer = float("nan")
+    eer_threshold = float("nan")
+    roc_fpr = None
+    roc_tpr = None
+    roc_auc = float("nan")
+
+    if is_binary and y_prob is not None:
+        prob_1d = y_prob.ravel() if y_prob.ndim > 1 else y_prob
+        eer, eer_threshold, roc_fpr, roc_tpr, roc_auc = _compute_eer_and_roc(y_true, prob_1d)
+    elif not is_binary and y_prob is not None:
+        try:
+            if y_prob.ndim == 2 and y_prob.shape[1] == n_classes:
+                roc_auc = float(roc_auc_score(y_true, y_prob, multi_class="ovr", average="macro"))
+        except ValueError:
+            logger.warning("Could not compute multiclass AUC")
+
+    return EventClassificationMetrics(
+        accuracy=float(acc),
+        f1_macro=float(f1_mac),
+        f1_weighted=float(f1_wt),
+        f1_per_class=f1_per_class,
+        precision_macro=float(prec_mac),
+        recall_macro=float(rec_mac),
+        confusion_matrix=cm,
+        n_samples=len(y_true),
+        class_distribution=class_dist,
+        roc_auc=roc_auc,
+        eer=eer,
+        eer_threshold=eer_threshold,
+        roc_fpr=roc_fpr,
+        roc_tpr=roc_tpr,
+    )
+
+
+def aggregate_cv_predictions(
+    y_true_all: np.ndarray,
+    y_pred_all: np.ndarray,
+    y_prob_all: np.ndarray | None,
+    cv_method: str,
+    n_folds: int,
+    class_names: list[str] | None = None,
+) -> EventClassificationMetrics:
+    """Aggregate all CV fold predictions and compute GLOBAL metrics."""
+    metrics = compute_event_metrics(y_true_all, y_pred_all, y_prob_all, class_names)
+    metrics.cv_method = cv_method
+    metrics.n_folds = n_folds
+    return metrics
