@@ -4,7 +4,7 @@ convert_benchmarks_to_unified.py — Benchmark datasets → unified HF Arrow for
 =================================================================================
 
 Converts the four benchmark directories to the unified format used by the
-training pipeline, so inspect_dataset.py can produce train/eval statistics
+training pipeline, so inspect.py can produce train/eval statistics
 on a common footing.
 
 UNIFIED OUTPUT FORMAT
@@ -393,7 +393,7 @@ def convert_gift_eval(src_root: Path, out_root: Path, overwrite: bool) -> None:
                         ts_list = ts_index.to_pydatetime().tolist()
                     except Exception as ts_exc:
                         logger.debug("    %s row %d: timestamp failed (%s)", out_key, i, ts_exc)
-                        ts_list = []  # inspect_dataset.py tolerates empty timestamp
+                        ts_list = []  # inspect.py tolerates empty timestamp
 
                     sid = str(row.get("item_id", f"{out_key}_{i:06d}"))
                     targets.append(target)
@@ -547,7 +547,7 @@ def main() -> None:
     logger.info("")
     logger.info("=" * 60)
     logger.info("All done. Output at: %s", output_root)
-    logger.info("Run inspect_dataset.py on any subdirectory for statistics.")
+    logger.info("Run inspect.py on any subdirectory for statistics.")
     logger.info("=" * 60)
 
 

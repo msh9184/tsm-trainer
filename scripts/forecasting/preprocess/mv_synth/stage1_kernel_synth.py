@@ -42,7 +42,6 @@ from common_utils import (
     rff_sample,
     ar_sample,
     periodic_component,
-    sample_length,
     save_as_hf_dataset,
     save_statistics_summary,
     scale_to_realistic,
@@ -53,6 +52,11 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+
+
+def sample_length_uniform(min_len: int, max_len: int, rng: np.random.Generator) -> int:
+    """Uniform length sampling between min_len and max_len (inclusive)."""
+    return int(rng.integers(min_len, max_len + 1))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -353,7 +357,7 @@ def _generate_one_sample(args: tuple) -> dict:
     idx, n_variates, min_len, max_len, base_seed = args
     rng = np.random.default_rng(base_seed + idx * 97 + 13)
 
-    T = sample_length(min_len, max_len, rng)
+    T = sample_length_uniform(min_len, max_len, rng)
 
     # Select generation method
     method_idx = rng.choice(len(_METHOD_FUNCS), p=_METHOD_WEIGHTS)
