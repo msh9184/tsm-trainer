@@ -176,3 +176,6 @@ question.txt
 CLAUDE.md
 outputs/
 results/
+
+# Error log
+errlog*
