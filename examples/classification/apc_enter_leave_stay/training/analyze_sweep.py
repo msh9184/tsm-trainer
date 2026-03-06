@@ -1,6 +1,7 @@
 """Analyze sweep results and generate summary tables + plots.
 
-Reads sweep_results.csv and produces:
+Reads per-phase CSV files (results_A.csv, results_B.csv, ...) or a merged
+sweep_results.csv and produces:
   - Top-N results per phase
   - Best configuration per factor (layer, context, channel, classifier)
   - Heatmaps: layer × classifier, context × classifier
@@ -8,7 +9,15 @@ Reads sweep_results.csv and produces:
 
 Usage:
     cd examples/classification/apc_enter_leave_stay
-    python training/analyze_sweep.py --results results/enter_leave_stay_setting3/sweep/sweep_results.csv
+
+    # Analyze a single phase result
+    python training/analyze_sweep.py --results results/.../sweep/results_A.csv
+
+    # Merge all per-phase CSVs and analyze
+    python training/analyze_sweep.py --results-dir results/.../sweep/
+
+    # Analyze pre-merged file
+    python training/analyze_sweep.py --results results/.../sweep/sweep_results.csv
 """
 
 from __future__ import annotations
@@ -44,6 +53,38 @@ def load_results(csv_path: str | Path):
     df["accuracy"] = df["accuracy"].astype(float)
     logger.info("Loaded %d valid results from %s", len(df), csv_path)
     return df
+
+
+def merge_phase_results(sweep_dir: str | Path) -> "pd.DataFrame":
+    """Merge all per-phase result CSVs (results_A.csv, results_B.csv, etc.)."""
+    import pandas as pd
+    import glob as globmod
+
+    sweep_dir = Path(sweep_dir)
+    csv_files = sorted(sweep_dir.glob("results_*.csv"))
+    if not csv_files:
+        raise FileNotFoundError(f"No results_*.csv files found in {sweep_dir}")
+
+    dfs = []
+    for f in csv_files:
+        try:
+            df = pd.read_csv(f)
+            logger.info("  %s: %d rows", f.name, len(df))
+            dfs.append(df)
+        except Exception:
+            logger.warning("Failed to read %s", f, exc_info=True)
+
+    merged = pd.concat(dfs, ignore_index=True)
+    merged = merged.drop_duplicates(subset=["exp_id"], keep="last")
+    merged = merged.dropna(subset=["f1_macro"])
+    merged["f1_macro"] = merged["f1_macro"].astype(float)
+    merged["accuracy"] = merged["accuracy"].astype(float)
+
+    # Save merged file
+    merged_path = sweep_dir / "sweep_results.csv"
+    merged.to_csv(merged_path, index=False)
+    logger.info("Merged %d valid results → %s", len(merged), merged_path)
+    return merged
 
 
 def top_n_results(df, n: int = 20, metric: str = "f1_macro"):
@@ -170,6 +211,22 @@ def generate_report(df, output_dir: Path) -> None:
     lines.append(f"  Channels: {best['channel_name']}")
     lines.append("")
 
+    # Per-phase summary
+    if "phase" in df.columns:
+        lines.append("PER-PHASE SUMMARY:")
+        lines.append("-" * 70)
+        for phase in sorted(df["phase"].unique()):
+            pdf = df[df["phase"] == phase]
+            best_row = pdf.loc[pdf["f1_macro"].idxmax()]
+            lines.append(
+                f"  Phase {phase}: {len(pdf):4d} exps  "
+                f"Best F1={best_row['f1_macro']:.4f}  "
+                f"({best_row['classifier_type']}/{best_row['classifier_name']}, "
+                f"L{best_row['layer']}, {best_row.get('context_name', 'N/A')}, "
+                f"{best_row.get('channel_name', 'N/A')})"
+            )
+        lines.append("")
+
     # Top 10
     lines.append("TOP 10 RESULTS:")
     lines.append("-" * 70)
@@ -201,7 +258,9 @@ def generate_report(df, output_dir: Path) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="Analyze sweep results")
-    parser.add_argument("--results", required=True, help="Path to sweep_results.csv")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--results", help="Path to a single results CSV")
+    group.add_argument("--results-dir", help="Path to sweep dir with per-phase CSVs (auto-merges)")
     parser.add_argument("--output-dir", default=None, help="Output directory (default: same as results)")
     args = parser.parse_args()
 
@@ -211,11 +270,16 @@ def main():
         datefmt="%H:%M:%S",
     )
 
-    results_path = Path(args.results)
-    output_dir = Path(args.output_dir) if args.output_dir else results_path.parent / "analysis"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if args.results_dir:
+        results_dir = Path(args.results_dir)
+        df = merge_phase_results(results_dir)
+        output_dir = Path(args.output_dir) if args.output_dir else results_dir / "analysis"
+    else:
+        results_path = Path(args.results)
+        df = load_results(results_path)
+        output_dir = Path(args.output_dir) if args.output_dir else results_path.parent / "analysis"
 
-    df = load_results(results_path)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     if len(df) == 0:
         logger.error("No valid results found!")
